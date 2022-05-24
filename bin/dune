@@ -1,0 +1,6 @@
+(executable
+ (public_name symta)
+ (name main)
+ (libraries symta core yojson)
+ (preprocess (pps ppx_jane ppx_yojson_conv))
+ )
