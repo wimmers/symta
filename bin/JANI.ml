@@ -30,6 +30,7 @@ type bounded_type = {
 
 type typ =
   TBounded of bounded_type
+| TBool  [@name "bool"]
 | TClock [@name "clock"]
   [@@deriving yojson]
 
@@ -41,7 +42,20 @@ let typ_of_yojson yojson =
       _
     )
   as assoc -> TBounded (bounded_type_of_yojson assoc)
+  | `String s when s = "clock" -> TClock
+  | `String s when s = "bool" -> TBool
   | x -> typ_of_yojson x
+
+let yojson_of_typ = function
+| TBool -> `String "bool"
+| TClock -> `String "clock"
+| TBounded {lower_bound; upper_bound} ->
+  `Assoc [
+    ("base", `String "int");
+    ("kind", `String "bounded");
+    ("lower-bound", `Int lower_bound);
+    ("upper-bound", `Int upper_bound);
+  ]
 
 type constant_value =
 | Real of float
@@ -59,7 +73,7 @@ type expression =
   }
 | Unary of {
     op : string;
-    exp: expression option [@default None] [@yojson_drop_default (=)];
+    exp: expression;
   }
 [@@deriving yojson]
 
@@ -68,6 +82,7 @@ let get = Core.List.Assoc.find_exn ~equal:String.equal
 
 let rec expression_of_yojson: (Yojson.Safe.t -> _) = function
 | `String s -> Var s
+| `Bool b -> Const (Bool b)
 | `Int n -> Const (Int n)
 | `Float n -> Const (Real n)
 | `Assoc a when
@@ -79,6 +94,23 @@ let rec expression_of_yojson: (Yojson.Safe.t -> _) = function
     }
 | x ->
   Yojson_conv.of_yojson_error ("expression_of_yojson: maleformed expression") x
+
+let rec yojson_of_expression = function
+| Var s -> `String s
+| Const (Bool b) -> `Bool b
+| Const (Int n) -> `Int n
+| Const (Real n) -> `Float n
+| Binary {op; left; right} ->
+  `Assoc [
+    ("op", `String op);
+    ("left", yojson_of_expression left);
+    ("right", yojson_of_expression right);
+  ]
+| Unary {op; exp} ->
+  `Assoc [
+    ("op", `String op);
+    ("exp", yojson_of_expression exp);
+  ]
 
 type variable_declaration = {
   name : identifier;
@@ -114,10 +146,11 @@ type location = {
   name : identifier; (* the name of the location, unique among all locations of this automaton *)
   time_progress : (* the location's time progress condition, not allowed except TA, PTA, STA, HA, PHA and STA, *)
                         (* type bool; if omitted in TA, PTA, STA, HA, PHA or SHA, it is true *)
-    commented_expression [@default default_exp] [@yojson_drop_default (=)];
+    commented_expression [@key "time-progress"] [@default default_exp] [@yojson_drop_default (=)];
   transient_values :
     transient_value list [@default []] [@yojson_drop_default (=)];
     (* values for transient variables in this location *)
+  comment : string option[@default None] [@yojson_drop_default (=)];
 } [@@deriving yojson]
 
 type assignment = {
@@ -173,3 +206,7 @@ type model = {
   automata : automaton list;
   system : composition;
 } [@@deriving yojson] [@@yojson.allow_extra_fields]
+
+let jani_of_json_string s = model_of_yojson (Yojson.Safe.from_string s)
+let jani_to_json_string jani =
+  Yojson.Safe.pretty_to_string (yojson_of_model jani)
