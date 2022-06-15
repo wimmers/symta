@@ -46,6 +46,12 @@ let unzip4 list =
   in
   loop (List.rev list) [] [] [] []
 
+let partition3_mapi xs ~f =
+  let tagged = List.mapi ~f xs in
+  List.filter_map tagged ~f:(function `Fst x -> Some x | _ -> None),
+  List.filter_map tagged ~f:(function `Snd x -> Some x | _ -> None),
+  List.filter_map tagged ~f:(function `Trd x -> Some x | _ -> None)
+
 (* From https://stackoverflow.com/questions/243864/what-is-the-ocaml-idiom-equivalent-to-pythons-range-function *)
 (* Returns a list of the integers in the range [i,j). *)
 let (--) i j = 

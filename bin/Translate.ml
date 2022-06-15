@@ -73,18 +73,100 @@ let variable_declaration ({
 } as decl: variable_declaration) =
   name, var_of_variable decl
 
+(* Given `[["x", e1; "z", e2], ["y", e3; "x", e4]]`,
+   return ["x", e1 ∧ e4; "y", e3; "z", e2]
+*)
+let merge_reset_pairs pairs =
+  let sorted =
+    List.sort
+      ~compare:(fun x y -> String.compare (fst x) (fst y))
+      (List.concat pairs) in
+  let rec merge last acc = function
+  | [] -> [last, Boolean.mk_or ctxt acc]
+  | (x, cond) :: xs -> if String.equal x last then
+      merge x (cond :: (List.rev acc)) xs
+    else
+      (last, Boolean.mk_or ctxt (List.rev acc)) :: merge x [cond] xs
+  in match sorted with
+  | [] -> []
+  | (x, cond) :: xs -> merge x [cond] xs
+
+let select_var_name = "select"
+let select_var = mk_const_s ctxt select_var_name int_sort
+let sync_var_name = "sync"
+let sync_var = mk_const_s ctxt sync_var_name string_sort
+let pc_var_name = "pc"
+let pc'_var_name = pc_var_name ^ "'"
+let pc_var = mk_const_s ctxt pc_var_name string_sort
+let pc'_var = mk_const_s ctxt pc'_var_name string_sort
+let rename name x = name ^ "_" ^ x
+let renamed_select_var name =
+  mk_const_s ctxt (rename name select_var_name) int_sort
+let renamed_sync_var name =
+  mk_const_s ctxt (rename name sync_var_name) string_sort
+let renamed_pc_var name =
+  mk_const_s ctxt (rename name pc_var_name) string_sort
+let renamed_pc'_var name =
+  mk_const_s ctxt (rename name pc'_var_name) string_sort
+
+let epsilon_snyc = mk_string "Eps" (* XXX Make this reserved keyword *)
+let no_sync = mk_string "None"
+
+let input_enabled_map =
+  let elements = model.system.elements in
+  let iteri ~f = List.iter elements
+    ~f:(fun {automaton; input_enable; _} -> f ~key:automaton ~data:input_enable)
+  in match Map.of_iteri (module String) ~iteri with
+  | `Ok m -> m
+  | `Duplicate_key k -> raise
+    (invalid_exn "Automaton is duplicate in composition" k)
+
+let is_input_enabled automaton_name action_name =
+  let input_enabled = Map.find_multi input_enabled_map automaton_name in
+  List.mem ~equal:String.equal input_enabled action_name
+
+let mk_weak s = mk_string (s ^ "?")
+let mk_strong s = mk_string (s ^ "!")
+
+let sync_val_of_action automaton_name action = (match action with
+| None -> epsilon_snyc
+| Some s -> if is_input_enabled automaton_name s then
+    mk_weak s
+  else
+    mk_strong s
+)
+
+let discrete_var_names_of =  List.filter_map ~f:(
+  fun ({name; typ; _}: variable_declaration) ->
+  match typ with
+  | TClock -> None
+  | _ -> Some name
+)
+
+let var_set_global = discrete_var_names_of model.variables
+
+
+module Environment (Vars: (
+  sig val variable_declarations: variable_declaration list end
+)) = struct
+
+open Vars
+
 let var_tab =
   Map.of_alist_exn (module String)
-    (List.map ~f:variable_declaration model.variables)
+    (List.map variable_declarations ~f:variable_declaration)
 
 let next_tab =
   Map.of_alist_exn (module String) (
-    List.map model.variables
+    List.map variable_declarations
       ~f:(fun decl -> decl.name, next_of_variable decl)
   )
 
-let var_typ_tab = Map.of_alist_exn (module String)
-  (List.map model.variables ~f:(fun decl -> decl.name, decl.typ))
+let var_typ_tab =
+  Map.of_alist_exn (module String) (
+    List.map variable_declarations
+      ~f:(fun decl -> decl.name, decl.typ)
+  )
 
 let var_of_name x = match Map.find var_tab x with
 | Some e -> e
@@ -129,6 +211,38 @@ let rec expression = function
   | "∨" -> mk_or ctxt [l; r]
   | _ -> raise (invalid_exn "Unsupported operator" op)
 (* | e -> raise (invalid_expr_exn "Unsupported expression" e) *)
+
+let unchanged_of_name var_name =
+  Boolean.mk_eq ctxt (next_of_name var_name) (var_of_name var_name)
+
+let only_change var_set changed = Util.(
+  printf "[%a] - [%a]@." pp_string_comma_list var_set pp_string_comma_list changed;
+  Boolean.mk_and ctxt (
+    List.filter_map ~f:(fun x ->
+      if List.mem ~equal:String.equal changed x then
+        None
+      else
+        Some (unchanged_of_name x)
+    ) var_set
+  )
+)
+
+let init_of_var_decl {name; initial_value; _} =
+  let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
+  Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
+
+end
+
+
+module Automaton (Automaton:(
+  sig val automaton: automaton end
+)) = struct
+
+open Automaton
+
+let variable_declarations = model.variables @ automaton.variables
+
+open Environment (struct let variable_declarations = variable_declarations end)
 
 let invar_location pc ({
   name;
@@ -182,48 +296,6 @@ let is_reset ({
     | _ -> false
 )
 
-let epsilon_snyc = mk_string "Eps" (* XXX Make this reserved keyword *)
-let no_sync = mk_string "None"
-
-let input_enabled_map =
-  let elements = model.system.elements in
-  let iteri ~f = List.iter elements
-    ~f:(fun {automaton; input_enable; _} -> f ~key:automaton ~data:input_enable)
-  in match Map.of_iteri (module String) ~iteri with
-  | `Ok m -> m
-  | `Duplicate_key k -> raise
-    (invalid_exn "Automaton is duplicate in composition" k)
-
-let is_input_enabled automaton_name action_name =
-  let input_enabled = Map.find_multi input_enabled_map automaton_name in
-  List.mem ~equal:String.equal input_enabled action_name
-
-let mk_weak s = mk_string (s ^ "?")
-let mk_strong s = mk_string (s ^ "!")
-
-let sync_val_of_action automaton_name action = (match action with
-| None -> epsilon_snyc
-| Some s -> if is_input_enabled automaton_name s then
-    mk_weak s
-  else
-    mk_strong s
-)
-
-let unchanged_of_name var_name =
-  Boolean.mk_eq ctxt (next_of_name var_name) (var_of_name var_name)
-
-let only_change var_set changed = Util.(
-  printf "[%a] - [%a]@." pp_string_comma_list var_set pp_string_comma_list changed;
-  Boolean.mk_and ctxt (
-    List.filter_map ~f:(fun x ->
-      if List.mem ~equal:String.equal changed x then
-        None
-      else
-        Some (unchanged_of_name x)
-    ) var_set
-  )
-)
-
 let edge var_set automaton_name edge_id pc pc' select sync ({
   location;
   action;
@@ -262,54 +334,6 @@ let edge var_set automaton_name edge_id pc pc' select sync ({
   and reset_pairs = List.map reset_vars ~f:(fun x -> (x, select_cond))
   in enable, effect, reset_pairs
 
-let select_var_name = "select"
-let select_var = mk_const_s ctxt select_var_name int_sort
-let sync_var_name = "sync"
-let sync_var = mk_const_s ctxt sync_var_name string_sort
-let pc_var_name = "pc"
-let pc'_var_name = pc_var_name ^ "'"
-let pc_var = mk_const_s ctxt pc_var_name string_sort
-let pc'_var = mk_const_s ctxt pc'_var_name string_sort
-let rename name x = name ^ "_" ^ x
-let renamed_select_var name =
-  mk_const_s ctxt (rename name select_var_name) int_sort
-let renamed_sync_var name =
-  mk_const_s ctxt (rename name sync_var_name) string_sort
-let renamed_pc_var name =
-  mk_const_s ctxt (rename name pc_var_name) string_sort
-let renamed_pc'_var name =
-  mk_const_s ctxt (rename name pc'_var_name) string_sort
-
-let partition3_mapi xs ~f =
-  let tagged = List.mapi ~f xs in
-  List.filter_map tagged ~f:(function `Fst x -> Some x | _ -> None),
-  List.filter_map tagged ~f:(function `Snd x -> Some x | _ -> None),
-  List.filter_map tagged ~f:(function `Trd x -> Some x | _ -> None)
-
-let discrete_var_names_of =  List.filter_map ~f:(
-  fun ({name; typ; _}: variable_declaration) ->
-  match typ with
-  | TClock -> None
-  | _ -> Some name
-)
-
-let var_set_global = discrete_var_names_of model.variables
-
-let merge_reset_pairs pairs =
-  let sorted =
-    List.sort
-      ~compare:(fun x y -> String.compare (fst x) (fst y))
-      (List.concat pairs) in
-  let rec merge last acc = function
-  | [] -> [last, Boolean.mk_or ctxt acc]
-  | (x, cond) :: xs -> if String.equal x last then
-      merge x (cond :: (List.rev acc)) xs
-    else
-      (last, Boolean.mk_or ctxt (List.rev acc)) :: merge x [cond] xs
-  in match sorted with
-  | [] -> []
-  | (x, cond) :: xs -> merge x [cond] xs
-
 (**
 TODO:
 - weak synchronization ((\/ enabled i) --> (\/ select = i))
@@ -323,7 +347,7 @@ let trans_automaton ({
   let select_is i = mk_eq ctxt select_var (mk_int i)
   and var_set_local = discrete_var_names_of variables
   in let var_set = var_set_global @ var_set_local
-  and eps_edges, strong_syncs, weak_syncs = partition3_mapi edges ~f:(
+  and eps_edges, strong_syncs, weak_syncs = Util.partition3_mapi edges ~f:(
     fun i edge ->
       match edge.action with
       | None -> `Fst i
@@ -377,10 +401,6 @@ let trans_automaton ({
     sync_valid
   ], merged_reset_pairs)
 
-let init_of_var_decl {name; initial_value; _} =
-  let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
-  Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
-
 let init_automaton ({
   variables;
   initial_locations;
@@ -423,9 +443,14 @@ let var_renaming_of_automaton ({name; variables; _}: automaton) =
   and post_vars = List.map post_renaming ~f:snd
   in local_renaming, (pre_vars, [], post_vars)
 
+end
+
+
 let renamings =
   List.map model.automata ~f:(fun automaton ->
-    automaton.name, var_renaming_of_automaton automaton
+    let module A = Automaton (struct let automaton = automaton end)
+    in
+    automaton.name, A.var_renaming_of_automaton automaton
   )
 
 let delta_var_name = "delta"
@@ -439,6 +464,8 @@ let clk_vars_of = List.filter_map ~f:(
 )
 
 let true_expr = Boolean.mk_true ctxt
+
+open Environment (struct let variable_declarations = model.variables end)
 
 let clock_effect reset_pairs =
   let clk_vars = clk_vars_of model.variables in
@@ -547,6 +574,7 @@ let loc_eq_prop automaton_name location_name =
 let print_all () = Boolean.(
   let inits, invars, transs, reset_pairs =
     List.map model.automata ~f:Caml.Format.(fun automaton ->
+      let open Automaton (struct let automaton = automaton end) in
       printf "Automaton: %s\n@." automaton.name;
       let rename = renamer_of automaton.name in
       let init = init_automaton automaton in
