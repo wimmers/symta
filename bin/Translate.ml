@@ -22,6 +22,17 @@ module Formula (Context: Context) (Model: Model) = struct
 let ctxt = Context.context
 let model = Model.model
 
+
+let invalid_expr_exn msg e =
+  Invalid_Model (sprintf "%s: %s"
+    msg
+    (yojson_of_expression e |> Yojson.Safe.to_string)
+  )
+
+let invalid_exn msg s =
+  Invalid_Model (sprintf "%s: %s" msg s)
+
+
 let int_sort = Arithmetic.Integer.mk_sort ctxt
 
 let real_sort = Arithmetic.Real.mk_sort ctxt
@@ -75,21 +86,6 @@ let next_tab =
 let var_typ_tab = Map.of_alist_exn (module String)
   (List.map model.variables ~f:(fun decl -> decl.name, decl.typ))
 
-let vars = List.map ~f:var_of_variable model.variables
-
-let nexts = List.map ~f:next_of_variable model.variables
-
-let next e = substitute e vars nexts
-
-let invalid_expr_exn msg e =
-  Invalid_Model (sprintf "%s: %s"
-    msg
-    (yojson_of_expression e |> Yojson.Safe.to_string)
-  )
-
-let invalid_exn msg s =
-  Invalid_Model (sprintf "%s: %s" msg s)
-
 let var_of_name x = match Map.find var_tab x with
 | Some e -> e
 | None -> raise (invalid_exn "Undeclared variable" x)
@@ -115,7 +111,10 @@ let rec expression = function
   | "¬" -> Boolean.mk_not ctxt exp
   | op -> raise (invalid_exn "Unsupported operator" op)
   )
-| Binary {op; left; right} -> let l, r = expression left, expression right in Arithmetic.(Boolean.(
+| Binary {op; left; right} ->
+  let l, r = expression left, expression right in
+  let open Arithmetic in
+  let open Boolean in
   match op with
   | "*" -> mk_mul ctxt [l; r]
   | "+" -> mk_add ctxt [l; r]
@@ -129,7 +128,6 @@ let rec expression = function
   | "∧" -> mk_and ctxt [l; r]
   | "∨" -> mk_or ctxt [l; r]
   | _ -> raise (invalid_exn "Unsupported operator" op)
-))
 (* | e -> raise (invalid_expr_exn "Unsupported expression" e) *)
 
 let invar_location pc ({
@@ -165,11 +163,8 @@ let assignment ({
   ref;
   value;
   _
-}: assignment) = (
-  match Map.find next_tab ref with
-    | Some const -> Boolean.mk_eq ctxt const (expression value)
-    | None -> raise (invalid_exn "Undeclared variable" ref)
-)
+}: assignment) =
+  Boolean.mk_eq ctxt (next_of_name ref) (expression value)
 
 let is_reset ({
   ref;
@@ -215,9 +210,7 @@ let sync_val_of_action automaton_name action = (match action with
 )
 
 let unchanged_of_name var_name =
-  match (Map.find var_tab var_name, Map.find next_tab var_name) with
-  | Some x, Some x' -> Boolean.mk_eq ctxt x' x
-  | _ -> raise (invalid_exn "Undeclared variable" var_name)
+  Boolean.mk_eq ctxt (next_of_name var_name) (var_of_name var_name)
 
 let only_change var_set changed = Util.(
   printf "[%a] - [%a]@." pp_string_comma_list var_set pp_string_comma_list changed;
