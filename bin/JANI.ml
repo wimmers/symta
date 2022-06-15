@@ -75,6 +75,10 @@ type expression =
     op : string;
     exp: expression;
   }
+| Local of {
+    name : identifier;
+    exp : expression;
+  }
 [@@deriving yojson]
 
 let is_mem = Core.List.Assoc.mem ~equal:String.equal
@@ -91,6 +95,14 @@ let rec expression_of_yojson: (Yojson.Safe.t -> _) = function
       op = identifier_of_yojson (get a "op");
       left = expression_of_yojson (get a "left");
       right = expression_of_yojson (get a "right");
+    }
+| `Assoc
+    [
+      "name", `String s;
+      "exp", a;
+    ] -> Local {
+      name = s;
+      exp = expression_of_yojson a;
     }
 | x ->
   Yojson_conv.of_yojson_error ("expression_of_yojson: maleformed expression") x
@@ -109,6 +121,11 @@ let rec yojson_of_expression = function
 | Unary {op; exp} ->
   `Assoc [
     ("op", `String op);
+    ("exp", yojson_of_expression exp);
+  ]
+| Local {name; exp} ->
+  `Assoc [
+    ("name", `String name);
     ("exp", yojson_of_expression exp);
   ]
 
@@ -192,6 +209,30 @@ type automaton = {
   comment : string option [@default None] [@yojson_drop_default (=)];
 } [@@deriving yojson]
 
+type ctl_operator =
+  EF [@key "∀◇"]
+
+let ctl_operator_of_yojson: (Yojson.Safe.t -> _) = function
+| `String "∀◇" -> EF
+| x -> raise (Yojson_conv.of_yojson_error
+    ("ctl_operator_of_yojson: malformed ctl_operator") x)
+
+let yojson_of_ctl_operator = function
+| EF -> `String "∀◇"
+
+type property_expression = {
+  op: ctl_operator;
+  exp: expression;
+}
+[@@deriving yojson]
+
+type property = {
+  name: identifier;
+  expression: property_expression;
+  comment: string option [@default None] [@yojson_drop_default (=)];
+}
+[@@deriving yojson]
+
 type model = {
   jani_version : int [@key "jani-version"];
   name : string;
@@ -202,7 +243,7 @@ type model = {
   (* constants : unit list; Kill option for convenience *)
   variables : variable_declaration list [@default []] [@yojson_drop_default (=)];
   (* restrict_initial : unit option; *)
-  (* properties : unit; Kill option for convenience *)
+  properties : property list;
   automata : automaton list;
   system : composition;
 } [@@deriving yojson] [@@yojson.allow_extra_fields]

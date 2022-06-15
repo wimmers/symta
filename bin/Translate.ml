@@ -105,7 +105,8 @@ let typ_of_name x = match Map.find var_typ_tab x with
 | Some t -> t
 | None -> raise (invalid_exn "Undeclared variable" x)
 
-let rec expression = function
+let expression ?(renamings=None) =
+  let rec expression ~var_of_name = function
 | Var x -> var_of_name x
 | Const c -> (
   match c with
@@ -113,16 +114,16 @@ let rec expression = function
   | Int i -> mk_int i
   | Bool b -> mk_bool b
 )
-| Unary {op; exp} -> let exp = expression exp in (
-  match op with
+| Unary {op; exp} -> let exp = expression ~var_of_name exp in
+  begin match op with
   | "¬" -> Boolean.mk_not ctxt exp
   | op -> raise (invalid_exn "Unsupported operator" op)
-  )
+  end
 | Binary {op; left; right} ->
-  let l, r = expression left, expression right in
+  let l, r = expression ~var_of_name left, expression~var_of_name  right in
   let open Arithmetic in
   let open Boolean in
-  match op with
+  begin match op with
   | "*" -> mk_mul ctxt [l; r]
   | "+" -> mk_add ctxt [l; r]
   | "-" -> mk_sub ctxt [l; r]
@@ -135,6 +136,12 @@ let rec expression = function
   | "∧" -> mk_and ctxt [l; r]
   | "∨" -> mk_or ctxt [l; r]
   | _ -> raise (invalid_exn "Unsupported operator" op)
+  end
+| Local {name; exp} as e -> match renamings with
+  | None -> raise (invalid_expr_exn "Property expression is not allowed here" e)
+  | Some r -> let var_of_name = r name in
+    expression ~var_of_name exp
+in expression ~var_of_name
 (* | e -> raise (invalid_expr_exn "Unsupported expression" e) *)
 
 let unchanged_of_name var_name =
@@ -465,6 +472,15 @@ let renamings =
     automaton.name, A.var_renaming_of_automaton automaton
   )
 
+let var_of_names =
+  List.map model.automata ~f:(fun automaton ->
+    let module E = Environment
+      (Context: Context)
+      (struct let variable_declarations = automaton.variables end)
+    in
+    automaton.name, E.var_of_name
+  )
+
 let delta_var_name = "delta"
 let delta_var = mk_const_s ctxt delta_var_name real_sort
 
@@ -579,10 +595,21 @@ let renamer_of automaton_name =
   let lhss, rhss = List.unzip renaming in
   fun e -> Expr.substitute e lhss rhss
 
-let loc_eq_prop automaton_name location_name =
-  let rename = renamer_of automaton_name in
-  let pc_var = rename pc_var in
-  Boolean.mk_eq ctxt pc_var (mk_string location_name)
+let translate_property_expression ({
+  op;
+  exp;
+}: property_expression) =
+  let renamings name =
+    let var_of_name =
+      List.Assoc.find_exn ~equal:String.equal var_of_names name in
+    let rename = renamer_of name in
+    fun x -> rename (var_of_name x)
+  in
+  match op with
+  | EF -> expression ~renamings:(Some renamings) exp
+
+let translate_property property =
+  translate_property_expression property.expression
 
 let print_all () = Boolean.(
   let inits, invars, transs, reset_pairs =
@@ -614,10 +641,7 @@ let print_all () = Boolean.(
   let init = mk_and ctxt [init; global_init] in
   let trans = mk_and ctxt
     [trans; mk_or ctxt [sync_composition; eps_composition]; clock_effect] in
-  let prop = loc_eq_prop "light" "offf" in
-  let clock_prop = expression (
-    Binary {op = ">"; left = Var "x"; right = Const (Int 9)}) in
-  let _prop = mk_and ctxt [prop; clock_prop] in
+  let prop = translate_property (List.hd_exn model.properties) in
   let glob_ceiling = global_static_ceiling_cond (-10) in
   let ceiling_opt = Some glob_ceiling in
   let _ceiling_opt = None in

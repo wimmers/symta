@@ -368,5 +368,6 @@ let translate ({
       });
       syncs = make_syncs automata broadcast;
       comment = None;
-    }
+    };
+    properties = [];
   }
