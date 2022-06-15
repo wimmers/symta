@@ -210,15 +210,15 @@ type automaton = {
 } [@@deriving yojson]
 
 type ctl_operator =
-  EF [@key "∀◇"]
+  EF
 
 let ctl_operator_of_yojson: (Yojson.Safe.t -> _) = function
-| `String "∀◇" -> EF
+| `String "∃◇" -> EF
 | x -> raise (Yojson_conv.of_yojson_error
     ("ctl_operator_of_yojson: malformed ctl_operator") x)
 
 let yojson_of_ctl_operator = function
-| EF -> `String "∀◇"
+| EF -> `String "∃◇"
 
 type property_expression = {
   op: ctl_operator;
