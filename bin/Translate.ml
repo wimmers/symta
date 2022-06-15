@@ -11,17 +11,8 @@ module type Model = sig
   val model: model
 end
 
+
 exception Invalid_Model of string
-
-(** Preconditions:
-- The automata names in `elements` are a subset of the ones in `automata`.
-*)
-
-module Formula (Context: Context) (Model: Model) = struct
-
-let ctxt = Context.context
-let model = Model.model
-
 
 let invalid_expr_exn msg e =
   Invalid_Model (sprintf "%s: %s"
@@ -32,6 +23,9 @@ let invalid_expr_exn msg e =
 let invalid_exn msg s =
   Invalid_Model (sprintf "%s: %s" msg s)
 
+
+module ContextUtils (Context: Context) = struct
+let ctxt = Context.context
 
 let int_sort = Arithmetic.Integer.mk_sort ctxt
 
@@ -45,6 +39,14 @@ let mk_int n = mk_numeral_int ctxt n int_sort
 and mk_string x = Seq.mk_string ctxt x
 and mk_float x = x |> Float.to_string |> Arithmetic.Real.mk_numeral_s ctxt
 and mk_bool b = if b then Boolean.mk_true ctxt else Boolean.mk_false ctxt
+
+end
+
+module Environment (Context: Context) (Vars: (
+  sig val variable_declarations: variable_declaration list end
+)) = struct
+
+open ContextUtils (Context)
 
 let sort_of_typ = function
 | TBounded _ -> int_sort
@@ -72,6 +74,99 @@ let variable_declaration ({
   _
 } as decl: variable_declaration) =
   name, var_of_variable decl
+
+open Vars
+
+let var_tab =
+  Map.of_alist_exn (module String)
+    (List.map variable_declarations ~f:variable_declaration)
+
+let next_tab =
+  Map.of_alist_exn (module String) (
+    List.map variable_declarations
+      ~f:(fun decl -> decl.name, next_of_variable decl)
+  )
+
+let var_typ_tab =
+  Map.of_alist_exn (module String) (
+    List.map variable_declarations
+      ~f:(fun decl -> decl.name, decl.typ)
+  )
+
+let var_of_name x = match Map.find var_tab x with
+| Some e -> e
+| None -> raise (invalid_exn "Undeclared variable" x)
+
+let next_of_name x = match Map.find next_tab x with
+| Some e -> e
+| None -> raise (invalid_exn "Undeclared variable" x)
+
+let typ_of_name x = match Map.find var_typ_tab x with
+| Some t -> t
+| None -> raise (invalid_exn "Undeclared variable" x)
+
+let rec expression = function
+| Var x -> var_of_name x
+| Const c -> (
+  match c with
+  | Real r -> mk_float r
+  | Int i -> mk_int i
+  | Bool b -> mk_bool b
+)
+| Unary {op; exp} -> let exp = expression exp in (
+  match op with
+  | "¬" -> Boolean.mk_not ctxt exp
+  | op -> raise (invalid_exn "Unsupported operator" op)
+  )
+| Binary {op; left; right} ->
+  let l, r = expression left, expression right in
+  let open Arithmetic in
+  let open Boolean in
+  match op with
+  | "*" -> mk_mul ctxt [l; r]
+  | "+" -> mk_add ctxt [l; r]
+  | "-" -> mk_sub ctxt [l; r]
+  | "/" -> mk_div ctxt l r
+  | "=" -> mk_eq ctxt l r
+  | "<" -> mk_lt ctxt l r
+  | "≤" -> mk_le ctxt l r
+  | ">" -> mk_gt ctxt l r
+  | "≥" -> mk_ge ctxt l r
+  | "∧" -> mk_and ctxt [l; r]
+  | "∨" -> mk_or ctxt [l; r]
+  | _ -> raise (invalid_exn "Unsupported operator" op)
+(* | e -> raise (invalid_expr_exn "Unsupported expression" e) *)
+
+let unchanged_of_name var_name =
+  Boolean.mk_eq ctxt (next_of_name var_name) (var_of_name var_name)
+
+let only_change var_set changed = Util.(
+  printf "[%a] - [%a]@."
+    pp_string_comma_list var_set pp_string_comma_list changed;
+  Boolean.mk_and ctxt (
+    List.filter_map ~f:(fun x ->
+      if List.mem ~equal:String.equal changed x then
+        None
+      else
+        Some (unchanged_of_name x)
+    ) var_set
+  )
+)
+
+let init_of_var_decl {name; initial_value; _} =
+  let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
+  Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
+
+end
+
+(** Preconditions:
+- The automata names in `elements` are a subset of the ones in `automata`.
+*)
+module Formula (Context: Context) (Model: Model) = struct
+
+open ContextUtils (Context)
+let model = Model.model
+
 
 (* Given `[["x", e1; "z", e2], ["y", e3; "x", e4]]`,
    return ["x", e1 ∧ e4; "y", e3; "z", e2]
@@ -145,93 +240,9 @@ let discrete_var_names_of =  List.filter_map ~f:(
 
 let var_set_global = discrete_var_names_of model.variables
 
-
-module Environment (Vars: (
-  sig val variable_declarations: variable_declaration list end
-)) = struct
-
-open Vars
-
-let var_tab =
-  Map.of_alist_exn (module String)
-    (List.map variable_declarations ~f:variable_declaration)
-
-let next_tab =
-  Map.of_alist_exn (module String) (
-    List.map variable_declarations
-      ~f:(fun decl -> decl.name, next_of_variable decl)
-  )
-
-let var_typ_tab =
-  Map.of_alist_exn (module String) (
-    List.map variable_declarations
-      ~f:(fun decl -> decl.name, decl.typ)
-  )
-
-let var_of_name x = match Map.find var_tab x with
-| Some e -> e
-| None -> raise (invalid_exn "Undeclared variable" x)
-
-let next_of_name x = match Map.find next_tab x with
-| Some e -> e
-| None -> raise (invalid_exn "Undeclared variable" x)
-
-let typ_of_name x = match Map.find var_typ_tab x with
-| Some t -> t
-| None -> raise (invalid_exn "Undeclared variable" x)
-
-let rec expression = function
-| Var x -> var_of_name x
-| Const c -> (
-  match c with
-  | Real r -> mk_float r
-  | Int i -> mk_int i
-  | Bool b -> mk_bool b
+let _ = if not (List.is_empty var_set_global) then raise (
+  Invalid_Model "Global variables are not supported"
 )
-| Unary {op; exp} -> let exp = expression exp in (
-  match op with
-  | "¬" -> Boolean.mk_not ctxt exp
-  | op -> raise (invalid_exn "Unsupported operator" op)
-  )
-| Binary {op; left; right} ->
-  let l, r = expression left, expression right in
-  let open Arithmetic in
-  let open Boolean in
-  match op with
-  | "*" -> mk_mul ctxt [l; r]
-  | "+" -> mk_add ctxt [l; r]
-  | "-" -> mk_sub ctxt [l; r]
-  | "/" -> mk_div ctxt l r
-  | "=" -> mk_eq ctxt l r
-  | "<" -> mk_lt ctxt l r
-  | "≤" -> mk_le ctxt l r
-  | ">" -> mk_gt ctxt l r
-  | "≥" -> mk_ge ctxt l r
-  | "∧" -> mk_and ctxt [l; r]
-  | "∨" -> mk_or ctxt [l; r]
-  | _ -> raise (invalid_exn "Unsupported operator" op)
-(* | e -> raise (invalid_expr_exn "Unsupported expression" e) *)
-
-let unchanged_of_name var_name =
-  Boolean.mk_eq ctxt (next_of_name var_name) (var_of_name var_name)
-
-let only_change var_set changed = Util.(
-  printf "[%a] - [%a]@." pp_string_comma_list var_set pp_string_comma_list changed;
-  Boolean.mk_and ctxt (
-    List.filter_map ~f:(fun x ->
-      if List.mem ~equal:String.equal changed x then
-        None
-      else
-        Some (unchanged_of_name x)
-    ) var_set
-  )
-)
-
-let init_of_var_decl {name; initial_value; _} =
-  let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
-  Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
-
-end
 
 
 module Automaton (Automaton:(
@@ -242,7 +253,8 @@ open Automaton
 
 let variable_declarations = model.variables @ automaton.variables
 
-open Environment (struct let variable_declarations = variable_declarations end)
+open Environment (Context: Context)
+  (struct let variable_declarations = variable_declarations end)
 
 let invar_location pc ({
   name;
@@ -465,7 +477,8 @@ let clk_vars_of = List.filter_map ~f:(
 
 let true_expr = Boolean.mk_true ctxt
 
-open Environment (struct let variable_declarations = model.variables end)
+open Environment (Context)
+  (struct let variable_declarations = model.variables end)
 
 let clock_effect reset_pairs =
   let clk_vars = clk_vars_of model.variables in
