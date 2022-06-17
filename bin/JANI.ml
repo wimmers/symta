@@ -243,9 +243,9 @@ type model = {
   (* constants : unit list; Kill option for convenience *)
   variables : variable_declaration list [@default []] [@yojson_drop_default (=)];
   (* restrict_initial : unit option; *)
-  properties : property list;
   automata : automaton list;
   system : composition;
+  properties : property list;
 } [@@deriving yojson] [@@yojson.allow_extra_fields]
 
 let jani_of_json_string s = model_of_yojson (Yojson.Safe.from_string s)
