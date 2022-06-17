@@ -81,8 +81,8 @@ type expression =
   }
 [@@deriving yojson]
 
-let is_mem = Core.List.Assoc.mem ~equal:String.equal
-let get = Core.List.Assoc.find_exn ~equal:String.equal
+let is_mem = Base.List.Assoc.mem ~equal:String.equal
+let get = Base.List.Assoc.find_exn ~equal:String.equal
 
 let rec expression_of_yojson: (Yojson.Safe.t -> _) = function
 | `String s -> Var s

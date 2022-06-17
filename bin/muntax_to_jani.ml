@@ -1,5 +1,6 @@
 open Core
 open Ppx_yojson_conv_lib
+open Symta
 
 let muntax_of_json_file s = Muntax.model_of_yojson (Yojson.Safe.from_file s)
 

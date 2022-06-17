@@ -3,7 +3,7 @@ open Printf
 open Z3
 open Expr
 open Z3_More
-open JANI
+open Symta.JANI
 
 let printf = Caml.Format.printf
 
