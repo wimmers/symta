@@ -1,5 +1,5 @@
 open Core
-open Ppx_yojson_conv_lib
+(* open Ppx_yojson_conv_lib *)
 
 type node = {
   name: string;
@@ -147,13 +147,36 @@ let translate_label s =
   | `Internal _s -> None
   | `Send s | `Receive s -> Some s
 
-let translate_edge id_to_name ({
+let mk_assignment name v = JANI.{
+  ref = name;
+  value = Const (Bool v);
+  index = 0;
+  comment = None
+}
+
+let translate_edge prop_locations id_to_name ({
   source;
   target;
   label;
   update;
   guard;
 }: edge) =
+  let source_name, target_name =
+    id_to_name source, id_to_name target in
+  let prop_assign_source =
+    if
+      List.mem ~equal:String.equal prop_locations source_name
+    then
+      [mk_assignment source_name false]
+    else [] in
+  let prop_assign_target =
+    if
+      List.mem ~equal:String.equal prop_locations target_name
+    then
+      [mk_assignment target_name true]
+    else
+      [] in
+  let prop_assign = prop_assign_source @ prop_assign_target in
   JANI.{
     location = Int.to_string source;
     action = translate_label label;
@@ -164,11 +187,11 @@ let translate_edge id_to_name ({
     destinations = [{
       location = Int.to_string target;
       probability = {exp = Const (Int 1); comment = None};
-      assignments = translate_updates update;
+      assignments = prop_assign @ translate_updates update;
       comment = None;
     }];
     comment = Some (
-      sprintf "source: %s, target: %s" (id_to_name source) (id_to_name target));
+      sprintf "source: %s, target: %s" source_name target_name);
   }
 
 let translate_node ({
@@ -186,7 +209,15 @@ let translate_node ({
     comment = Some name;
   }
 
-let translate_automaton ({
+let loc_var_decl name =
+  JANI.{
+    name;
+    typ = TBool;
+    transient = false;
+    initial_value = Some (Const (Bool false))
+  }
+
+let translate_automaton prop_locations ({
   name;
   nodes;
   edges;
@@ -205,10 +236,11 @@ let translate_automaton ({
     in
     JANI.{
       name = name;
-      variables = [];
+      variables = List.map prop_locations ~f:loc_var_decl;
       locations = List.map nodes ~f:translate_node;
       initial_locations = [Int.to_string initial];
-      edges = List.map edges ~f:(translate_edge id_to_name);
+      edges = List.map edges
+        ~f:(translate_edge prop_locations id_to_name);
       comment = None;
     }
 
@@ -319,7 +351,7 @@ let make_syncs automata broadcast =
 
 let translate_variable_declaration (name, lower, upper) =
   JANI.{
-    name = name;
+    name;
     typ = TBounded {lower_bound = lower; upper_bound = upper};
     transient = false;
     initial_value = Some (Const (Int 0));
@@ -337,13 +369,35 @@ let translate_clocks s =
     initial_value = Some (Const (Int 0));
   })
 
+let locations_of_formula s =
+  let open Re2 in
+  let matches = get_matches_exn (create_exn "(\\w+)\\.(\\w+)") s in
+  List.map matches ~f:(fun m ->
+    let name = Match.get ~sub:(`Index 1) m |> Option.value_exn in
+    let loc = Match.get ~sub:(`Index 2) m |> Option.value_exn in
+    name, loc
+  )
+
 let translate ({
   automata;
   clocks;
   vars;
-  formula = _formula;
+  formula;
   broadcast;
 }: model): JANI.model =
+  let prop_location_pairs =
+    locations_of_formula formula |>
+    List.sort_and_group ~compare:(fun (name1, _) (name2, _) ->
+      String.compare name1 name2)
+    |> List.map ~f:(fun names_locs ->
+        List.hd_exn names_locs |> fst,
+        List.map names_locs ~f:snd
+        |> List.dedup_and_sort ~compare:String.compare)
+  in
+  let prop_locations_of automaton =
+    List.Assoc.find ~equal:String.equal prop_location_pairs automaton.name
+    |> Option.value ~default:[]
+  in
   let action_set = List.concat_map automata ~f:(fun automaton ->
     automaton.edges
     |> List.filter_map ~f:(fun edge ->
@@ -357,9 +411,13 @@ let translate ({
     jani_version = 1;
     name = "";
     typ = "ta";
-    actions = List.map action_set ~f:(fun a -> JANI.{name = a; comment = None});
+    actions = List.map action_set ~f:(fun a -> JANI.{
+      name = a;
+      comment = None
+    });
     variables = translate_vars vars @ translate_clocks clocks;
-    automata = List.map automata ~f:translate_automaton;
+    automata = List.map automata
+      ~f:(fun a -> translate_automaton (prop_locations_of a) a);
     system = {
       elements = List.map automata ~f:(fun automaton -> {
         automaton = automaton.name;
@@ -369,5 +427,14 @@ let translate ({
       syncs = make_syncs automata broadcast;
       comment = None;
     };
-    properties = [];
+    properties = [
+      {
+        name = "Muntax Formula";
+        comment = Some formula;
+        expression = {
+          op = EF;
+          exp = Const (Bool false);
+        } 
+      }
+    ];
   }
