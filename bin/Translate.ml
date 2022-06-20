@@ -624,6 +624,13 @@ let global_static_ceiling_cond k =
   :: List.map clk_vars ~f:(static_ceiling_single_cond k)
   |> Boolean.mk_and ctxt
 
+let delay_clock_vars =
+  let clk_vars = clk_vars_of model.variables in
+  let lhss = List.map ~f:var_of_name clk_vars in
+  let rhss = List.map ~f:(fun e -> Arithmetic.mk_add ctxt [e; delta_var]) lhss
+  in
+  fun e -> Expr.substitute e lhss rhss
+
 let renamer_of automaton_name =
   let renaming, _var_sets =
     List.Assoc.find_exn ~equal:String.equal renamings automaton_name in
@@ -646,28 +653,34 @@ let translate_property_expression ({
 let translate_property property =
   translate_property_expression property.expression
 
+let print_boxed = Caml.Format.printf "@[%t@]\n@."
+
+let dprintf = Caml.Format.dprintf
+
 let print_all () = Boolean.(
   let inits, invars, transs, reset_pairs =
-    List.map model.automata ~f:Caml.Format.(fun automaton ->
+    List.map model.automata ~f:(fun automaton ->
       let open Automaton (struct let automaton = automaton end) in
-      printf "Automaton: %s\n@." automaton.name;
+      dprintf "Automaton:@ %s" automaton.name |> print_boxed;
       let rename = renamer_of automaton.name in
       let init = init_automaton automaton in
       let init = rename init in
-      printf "Init: %a\n" pp_expr init;
+      dprintf "Init: %a" pp_expr init |> print_boxed;
       let invar = invar_automaton pc_var automaton |> snd |> rename in
-      printf "Invar: %s\n@." (Expr.to_string invar);
+      dprintf "Invar: %a" pp_expr invar |> print_boxed;
       let trans, reset_pairs = trans_automaton automaton in
       let trans, reset_pairs =
-        rename trans, List.map ~f:(fun (x, y) -> x, rename y) reset_pairs in
-      printf "Trans: %s\n@." (Expr.to_string trans);
-      printf "Reset conds: %a@."
+        rename trans |> delay_clock_vars,
+        List.map ~f:(fun (x, y) -> x, rename y) reset_pairs in
+      dprintf "Trans:@ %a" pp_expr trans |> print_boxed;
+      dprintf "Reset conds:@ @[%a@]"
         (
           Util.pp_newline_list
             (fun ppf (x, expr) ->
-              fprintf ppf "%s: %a" x pp_expr expr)
+              Caml.Format.fprintf ppf "%s: %a" x pp_expr expr)
         )
-        reset_pairs;
+        reset_pairs
+      |> print_boxed;
       init, invar, trans, reset_pairs
     ) |> Util.unzip4 in
   let init, invar, trans =
@@ -677,20 +690,23 @@ let print_all () = Boolean.(
   let trans = mk_and ctxt
     [trans; mk_or ctxt [sync_composition; eps_composition]; clock_effect] in
   let prop = translate_property (List.hd_exn model.properties) in
-  let glob_ceiling = global_static_ceiling_cond (-10) in
+  let glob_ceiling = global_static_ceiling_cond 10000 in
   let ceiling_opt = Some glob_ceiling in
   let _ceiling_opt = None in
   (* need special treatment for delays in prop check *)
-  printf "Clock effect: %s\n@." (clock_effect |> Expr.to_string);
-  printf "Sync composition: %s\n@." (sync_composition |> Expr.to_string);
-  printf "Eps composition: %s\n@." (eps_composition |> Expr.to_string);
-  printf "Pre vars: %a\n@." pp_expr_comma_list pre_vars;
-  printf "Aux vars: %a\n@." pp_expr_comma_list aux_vars;
-  printf "Post vars: %a\n@." pp_expr_comma_list post_vars;
-  printf "Init: %a\n@."  pp_expr init;
-  printf "Invar: %a\n@." pp_expr invar;
-  printf "Trans: %a\n@." pp_expr trans;
-  printf "Prop: %a\n@." pp_expr prop;
+  dprintf "Clock effect:@ %a" pp_expr clock_effect
+  |> print_boxed;
+  dprintf "Sync composition:@ %a" pp_expr sync_composition
+  |> print_boxed;
+  dprintf "Eps composition:@ %a" pp_expr eps_composition
+  |> print_boxed;
+  dprintf "Pre vars:@ %a" pp_expr_comma_list pre_vars |> print_boxed;
+  dprintf "Aux vars:@ %a" pp_expr_comma_list aux_vars |> print_boxed;
+  dprintf "Post vars:@ %a" pp_expr_comma_list post_vars |> print_boxed;
+  dprintf "Init:@ %a" pp_expr init |> print_boxed;
+  dprintf "Invar:@ %a" pp_expr invar |> print_boxed;
+  dprintf "Trans:@ %a" pp_expr trans |> print_boxed;
+  dprintf "Prop:@ %a" pp_expr prop |> print_boxed;
   let module System: BMC.System = struct
     let init = pre_vars, init
     let pred = post_vars, prop
