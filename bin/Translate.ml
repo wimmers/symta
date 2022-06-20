@@ -168,9 +168,16 @@ let only_change var_set changed = Util.(
   )
 )
 
-let init_of_var_decl {name; initial_value; _} =
-  let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
-  Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
+let delta_var_name = "delta"
+let delta_var = mk_const_s ctxt delta_var_name real_sort
+
+let init_of_var_decl {name; initial_value; typ; _} =
+  let initial_value =
+    match typ with
+    | TClock -> delta_var
+    | _ -> Option.value initial_value ~default:(Const (Int 0)) |> expression
+  in
+  Boolean.mk_eq ctxt (var_of_name name) initial_value
 
 let discrete_var_names = discrete_var_names_of variable_declarations
 
@@ -496,9 +503,6 @@ let var_of_names =
     automaton.name, E.var_of_name
   )
 
-let delta_var_name = "delta"
-let delta_var = mk_const_s ctxt delta_var_name real_sort
-
 let clk_vars_of = List.filter_map ~f:(
   fun ({name; typ; _}: variable_declaration) ->
   match typ with
@@ -523,7 +527,7 @@ let clock_effect reset_pairs =
       |> Option.value ~default:false_expr
     ) in
     mk_ite ctxt cond
-      (mk_eq ctxt x_next (mk_int 0))
+      (mk_eq ctxt x_next delta_var)
       (mk_eq ctxt x_next (Arithmetic.mk_add ctxt [x_var; delta_var]))
   ) in
   Boolean.mk_and ctxt reset_conds
@@ -671,7 +675,7 @@ let print_all () = Boolean.(
       dprintf "Invar: %a" pp_expr invar |> print_boxed;
       let trans, reset_pairs = trans_automaton automaton in
       let trans, reset_pairs =
-        rename trans |> delay_clock_vars,
+        rename trans,
         List.map ~f:(fun (x, y) -> x, rename y) reset_pairs in
       dprintf "Trans:@ %a" pp_expr trans |> print_boxed;
       dprintf "Reset conds:@ @[%a@]"
@@ -686,6 +690,7 @@ let print_all () = Boolean.(
     ) |> Util.unzip4 in
   let init, invar, trans =
     Util.apply3 ~f:(mk_and ctxt) (inits, invars, transs) in
+  let invar = Boolean.mk_and ctxt [invar; delta_constraint] in
   let clock_effect = clock_effect reset_pairs in
   let init = mk_and ctxt [init; global_init] in
   let trans = mk_and ctxt

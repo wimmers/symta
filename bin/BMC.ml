@@ -102,8 +102,8 @@ module BMC (System: System) (Context: Context) = struct
           | _ -> loop (i + 1) (Boolean.mk_not ctxt pred :: neg_preds)
     in
     let pred = reindex 0 pre_vars pred in
-    Caml.Format.printf "Init: %a@." pp_expr init;
-    Caml.Format.printf "Pred: %a@." pp_expr pred;
+    let invar = reindex 0 pre_vars invar in
+    add solver [invar];
     match check solver [init; pred] with
     |  SATISFIABLE -> "Initial states satisfy predicate"
     | _ -> loop 1 [Boolean.mk_not ctxt pred]
