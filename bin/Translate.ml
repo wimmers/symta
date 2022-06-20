@@ -507,6 +507,7 @@ let clk_vars_of = List.filter_map ~f:(
 )
 
 let true_expr = Boolean.mk_true ctxt
+let false_expr = Boolean.mk_false ctxt
 
 open Environment (Context)
   (struct let variable_declarations = model.variables end)
@@ -519,7 +520,7 @@ let clock_effect reset_pairs =
     let x_next = next_of_name x in
     let cond = (
       List.Assoc.find ~equal:String.equal reset_pairs x
-      |> Option.value ~default:true_expr
+      |> Option.value ~default:false_expr
     ) in
     mk_ite ctxt cond
       (mk_eq ctxt x_next (mk_int 0))
