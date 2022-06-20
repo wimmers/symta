@@ -42,6 +42,14 @@ and mk_bool b = if b then Boolean.mk_true ctxt else Boolean.mk_false ctxt
 
 end
 
+
+let discrete_var_names_of =  List.filter_map ~f:(
+  fun ({name; typ; _}: variable_declaration) ->
+  match typ with
+  | TClock -> None
+  | _ -> Some name
+)
+
 module Environment (Context: Context) (Vars: (
   sig val variable_declarations: variable_declaration list end
 )) = struct
@@ -164,6 +172,11 @@ let init_of_var_decl {name; initial_value; _} =
   let initial_value = Option.value initial_value ~default:(Const (Int 0)) in
   Boolean.mk_eq ctxt (var_of_name name) (expression initial_value)
 
+let discrete_var_names = discrete_var_names_of variable_declarations
+
+let discrete_unchanged =
+  List.map discrete_var_names ~f:unchanged_of_name |> Boolean.mk_and ctxt
+
 end
 
 (** Preconditions:
@@ -238,12 +251,6 @@ let sync_val_of_action automaton_name action = (match action with
     mk_strong s
 )
 
-let discrete_var_names_of =  List.filter_map ~f:(
-  fun ({name; typ; _}: variable_declaration) ->
-  match typ with
-  | TClock -> None
-  | _ -> Some name
-)
 
 let var_set_global = discrete_var_names_of model.variables
 
@@ -432,8 +439,16 @@ let init_automaton ({
   pc_init :: List.map ~f:init_of_var_decl variables
   |> Boolean.mk_and ctxt
 
-let var_renaming_of_automaton ({name; variables; _}: automaton) =
-  let var_set_local = discrete_var_names_of variables in
+let local_var_decls_renamed =
+  List.map automaton.variables
+    ~f:(fun decl -> {decl with name = rename automaton.name decl.name})
+
+let pc_var_renamed_unchanged = Boolean.mk_eq ctxt
+  (renamed_pc_var automaton.name) (renamed_pc'_var automaton.name) 
+
+let var_set_local = discrete_var_names_of automaton.variables
+
+let var_renaming_of_automaton ({name; _}: automaton) =
   let local_renaming_pre = List.map var_set_local ~f:(
     fun x ->
       var_of_name x,
@@ -585,9 +600,29 @@ let static_ceiling_single_cond k clock_var_name =
     ]
   ])
 
+module All_Environment = Environment (Context)
+  (struct
+    let variable_declarations =
+      let decls = List.map model.automata
+        ~f:(fun automaton ->
+          let module A = Automaton (struct let automaton = automaton end)
+          in A.local_var_decls_renamed)
+      in
+      List.concat (model.variables :: decls)
+  end)
+
 let global_static_ceiling_cond k =
   let clk_vars = clk_vars_of model.variables in
-  List.map clk_vars ~f:(static_ceiling_single_cond k) |> Boolean.mk_and ctxt
+  let all_discrete_unchanged = All_Environment.discrete_unchanged in
+  let all_pc_unchanged = List.map model.automata
+  ~f:(fun automaton ->
+    let module A = Automaton (struct let automaton = automaton end)
+    in A.pc_var_renamed_unchanged)
+  |> Boolean.mk_and ctxt in
+  all_pc_unchanged
+  :: all_discrete_unchanged
+  :: List.map clk_vars ~f:(static_ceiling_single_cond k)
+  |> Boolean.mk_and ctxt
 
 let renamer_of automaton_name =
   let renaming, _var_sets =
