@@ -703,7 +703,14 @@ let print_all () = Boolean.(
 
 end
 
-let print_all model =
+let print_all ?(property_name=None) model =
+  let model = begin match property_name with
+  | None -> model
+  | Some name ->
+    let property = List.find_exn
+      ~f:(fun prop -> String.equal prop.name name) model.properties in
+    {model with properties = [property]}
+  end in
   let _: unit = Stdio.print_endline "Creating context" in
   let module Context = struct let context = mk_context [] end
   in let _: unit = Stdio.print_endline "Setting up model"
