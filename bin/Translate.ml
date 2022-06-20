@@ -703,7 +703,7 @@ let print_all () = Boolean.(
 
 end
 
-let print_all ?(property_name=None) model =
+let print_all ?(property_name=None) ~bound model =
   let model = begin match property_name with
   | None -> model
   | Some name ->
@@ -719,7 +719,6 @@ let print_all ?(property_name=None) model =
   in let module Formula = Formula (Context) (Model)
   in let module System = (val (Formula.print_all ()))
   in let module Checker = BMC.BMC (System) (Context) in
-  let bound = 5 in
   let result = Checker.bmc bound in
   let _: unit = printf "Result of BMC for k = %d: %s@." bound result in
   let result = Checker.k_induction bound in
