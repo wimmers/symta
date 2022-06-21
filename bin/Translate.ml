@@ -572,6 +572,13 @@ let all_composition =
 let delta_constraint =
   Arithmetic.(mk_ge ctxt delta_var (Real.mk_numeral_i ctxt 0))
 
+let clocks_nonneg =
+  let open Arithmetic in
+  let clk_vars = clk_vars_of model.variables in
+  List.map clk_vars
+    ~f:(fun name -> mk_ge ctxt (var_of_name name) (Real.mk_numeral_i ctxt 0))
+  |> Boolean.mk_and ctxt
+
 let global_init =
   List.map ~f:init_of_var_decl model.variables |> Boolean.mk_and ctxt
 
@@ -690,7 +697,7 @@ let print_all () = Boolean.(
     ) |> Util.unzip4 in
   let init, invar, trans =
     Util.apply3 ~f:(mk_and ctxt) (inits, invars, transs) in
-  let invar = Boolean.mk_and ctxt [invar; delta_constraint] in
+  let invar = Boolean.mk_and ctxt [invar; delta_constraint; clocks_nonneg] in
   let clock_effect = clock_effect reset_pairs in
   let init = mk_and ctxt [init; global_init] in
   let trans = mk_and ctxt
