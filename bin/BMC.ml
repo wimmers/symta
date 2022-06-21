@@ -45,6 +45,7 @@ module BMC (System: System) (Context: Context) = struct
     substitute expr vars reindexed
 
   let next_vars = aux_vars @ post_vars
+  let invar_vars = aux_vars @ pre_vars
 
   let bmc bound = Solver.(
     let solver = mk_simple_solver ctxt in
@@ -52,7 +53,7 @@ module BMC (System: System) (Context: Context) = struct
       if i > bound then
         "Bound exceeded"
       else
-        let invar = reindex i pre_vars invar in
+        let invar = reindex i invar_vars invar in
         let pred = reindex i pre_vars pred in
         let trans = reindex i next_vars trans |> reindex (i - 1) pre_vars in
         add solver [trans; invar];
@@ -62,9 +63,10 @@ module BMC (System: System) (Context: Context) = struct
         | SATISFIABLE -> sprintf "Reaching run of length: %d" i
         | _  -> loop (i + 1)
     in
-    let init = reindex 0 pre_vars init in
+    let init = reindex 0 invar_vars init in
+    let invar = reindex 0 invar_vars invar in
     let pred = reindex 0 pre_vars pred in
-    add solver [init];
+    add solver [init; invar];
     (* Caml.Format.printf "Pred: %a@." pp_expr pred;
     Stdio.print_endline (to_string solver |> normalize_z3_sexps); *)
     match check solver [pred] with
@@ -82,12 +84,12 @@ module BMC (System: System) (Context: Context) = struct
           |> Boolean.mk_not ctxt)
       | None -> [] in
     let solver = mk_simple_solver ctxt in
-    let init = reindex 0 pre_vars init in
+    let init = reindex 0 invar_vars init in
     let rec loop i neg_preds =
       if i > bound then
         "Bound exceeded"
       else
-        let invar = reindex i pre_vars invar in
+        let invar = reindex i invar_vars invar in
         let pred = reindex i pre_vars pred in
         let trans = reindex i next_vars trans |> reindex (i - 1) pre_vars in
         add solver [trans; invar];
@@ -101,8 +103,8 @@ module BMC (System: System) (Context: Context) = struct
           | UNSATISFIABLE -> sprintf "Invariant of diameter: %d" i
           | _ -> loop (i + 1) (Boolean.mk_not ctxt pred :: neg_preds)
     in
+    let invar = reindex 0 invar_vars invar in
     let pred = reindex 0 pre_vars pred in
-    let invar = reindex 0 pre_vars invar in
     add solver [invar];
     match check solver [init; pred] with
     |  SATISFIABLE -> "Initial states satisfy predicate"
