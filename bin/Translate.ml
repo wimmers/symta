@@ -300,6 +300,12 @@ let invar_automaton pc ({
   mk_and ctxt (List.map ~f:(invar_location pc) locations)
 )
 
+let invar_loc_in_bounds =
+  let open Boolean in
+  mk_or ctxt (List.map automaton.locations ~f:(
+    fun location -> mk_eq ctxt pc_var (mk_string location.name)
+  ))
+
 let invalid_edge_exn msg e =
   Invalid_Model (sprintf "%s: %s"
     msg
@@ -679,6 +685,7 @@ let print_all () = Boolean.(
       let init = rename init in
       dprintf "Init: %a" pp_expr init |> print_boxed;
       let invar = invar_automaton pc_var automaton |> snd |> rename in
+      let invar = mk_and ctxt [invar; invar_loc_in_bounds |> rename] in
       dprintf "Invar: %a" pp_expr invar |> print_boxed;
       let trans, reset_pairs = trans_automaton automaton in
       let trans, reset_pairs =
@@ -703,7 +710,7 @@ let print_all () = Boolean.(
   let trans = mk_and ctxt
     [trans; mk_or ctxt [sync_composition; eps_composition]; clock_effect] in
   let prop = translate_property (List.hd_exn model.properties) in
-  let glob_ceiling = global_static_ceiling_cond 10000 in
+  let glob_ceiling = global_static_ceiling_cond 0 in
   let ceiling_opt = Some glob_ceiling in
   let _ceiling_opt = None in
   (* need special treatment for delays in prop check *)
@@ -748,8 +755,8 @@ let print_all ?(property_name=None) ~bound model =
   in let module Formula = Formula (Context) (Model)
   in let module System = (val (Formula.print_all ()))
   in let module Checker = BMC.BMC (System) (Context) in
-  let result = Checker.bmc bound in
-  let _: unit = printf "Result of BMC for k = %d: %s@." bound result in
+  (* let result = Checker.bmc bound in
+  let _: unit = printf "Result of BMC for k = %d: %s@." bound result in *)
   let result = Checker.k_induction bound in
   let _: unit = printf "Result of k-induction for k = %d: %s@." bound result in
   ()
