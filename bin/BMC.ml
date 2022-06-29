@@ -16,6 +16,7 @@ module type System = sig
   *)
   val trans: expr list * expr list * expr list * expr
   val direct_simulation_opt: expr option
+  val enlarge_cex: (expr * expr option) list -> expr
 end
 
 module BMC (System: System) (Context: Context) = struct
@@ -166,5 +167,141 @@ module BMC (System: System) (Context: Context) = struct
     |  SATISFIABLE -> "Initial states satisfy predicate"
     | _ -> loop 1 [Boolean.mk_not ctxt pred]
 
+let dest_conj e =
+  if not (Boolean.is_and e) then
+    raise (Invalid_argument
+      (Caml.Format.asprintf "Not a conjunction: %a" pp_expr e))
+  else
+    get_args e
+
+let is_sat = function
+| Solver.SATISFIABLE -> true
+| UNSATISFIABLE -> false
+| _ -> raise (Invalid_argument "Unexpected solver status")
+
+let k_ind ~enlarge_cex k frame0 phi =
+  let open Caml.Format in
+  let open Boolean in
+  let open Solver in
+  let solver = mk_simple_solver ctxt in
+  let _generalize _frame c = mk_not ctxt c in
+  let extract_predecessor model _s =
+    let model = Option.value_exn model in
+    let extracted_pre_vars = project_index_vars model 0 pre_vars in
+    enlarge_cex extracted_pre_vars
+  in
+  let init = reindex 0 invar_vars init in
+  let invar = reindex 0 invar_vars invar in
+  let trans = reindex 1 next_vars trans |> reindex 0 pre_vars in
+  (* consumes a vanilla conjunction, returns a non-indexed cube *)
+  let generalize frame s =
+    let open Boolean in
+    let cube = simplify s None |> dest_conj |> List.map ~f:(mk_not ctxt) in
+    (* let cube = simplify s None |> dest_conj in *)
+    let gen_test c =
+      let c0 = reindex 0 pre_vars c in
+      let c1 = reindex 1 pre_vars c in
+      (* printf "Try gen: %a@." pp_expr (mk_not ctxt c0 |> fun s -> simplify s None);
+      printf "Init: %a@." pp_expr init; *)
+      not (is_sat (check solver [frame; trans; c0; mk_not ctxt c1])
+        || is_sat (check solver [init; mk_not ctxt c0]))
+      (* is_sat (check solver [init; mk_not ctxt c0]) *)
+    in
+    let rec loop acc = function
+      | [] -> mk_or ctxt (List.rev acc)
+      | clause :: rest ->
+        if gen_test (mk_or ctxt (acc @ rest)) then begin
+          printf "@[Dropped clause:@ %a@]@." pp_expr clause;
+          loop acc rest
+        end
+        else
+          loop (clause :: acc) rest
+    in
+    loop [] cube
+  in
+  let rec loop frame g q =
+    match q with
+    | [] ->
+      printf "@[Blocked. g:@ %a@ frame:@ %a@]@." pp_expr g pp_expr frame;
+      `Blocked g
+    | (s, f) :: q ->
+      printf "@[\n\nf:%d@ s: %a@]@." f pp_expr s;
+      if f = 0 then
+        begin match check solver [init; invar; reindex 0 pre_vars s] with
+        | SATISFIABLE   -> `Counterexample k
+        | UNSATISFIABLE -> `KCTI k
+        | _ -> raise (Invalid_argument "Unexpected solver status")
+        end
+      else
+        let frame = mk_and ctxt [frame; mk_not ctxt (reindex 0 pre_vars s)] in
+        let s' = reindex 1 pre_vars s in
+        begin match check solver [frame; trans; s'] with
+        | SATISFIABLE ->
+          let model = get_model solver in
+          let t = extract_predecessor model s in
+          let () = assert (
+            check solver [mk_not ctxt frame; reindex 0 pre_vars t]
+            |> is_sat |> not) in
+          printf "@[Extracted cex: %a@]@." pp_expr t;
+          loop frame g ((t, f - 1) :: (s, f) :: q)
+        | UNSATISFIABLE ->
+          let c = generalize frame s in
+          let frame = mk_and ctxt [frame; reindex 0 pre_vars c] in
+          let g = mk_and ctxt [g; c] in
+          printf "@[Cube blocked:@ %a@ Generalize:@ %a@]@." pp_expr s pp_expr c;
+          loop frame g q
+        | _ -> raise (Invalid_argument "Unexpected solver status")
+        end
+  in
+  printf "\n\nk-ind for k=%d@." k;
+  loop (mk_and ctxt [frame0; invar]) phi [mk_not ctxt phi, k]
+
+let is_0_invariant phi =
+  let pred0 = Boolean.mk_not ctxt phi |> reindex 0 pre_vars in
+  let invar0 = reindex 0 invar_vars invar in
+  let init0 = reindex 0 invar_vars init in
+  let open Solver in
+  let solver = mk_simple_solver ctxt in
+  check solver [init0; invar0; pred0] |> is_sat |> not
+
+let check_invariant phi =
+  let pred0 = reindex 0 pre_vars pred in
+  let invar0 = reindex 0 invar_vars invar in
+  let invar1 = reindex 1 invar_vars invar in
+  let trans01 = reindex 1 next_vars trans |> reindex 0 pre_vars in
+  let phi0 = reindex 0 pre_vars phi in
+  let phi1 = reindex 1 pre_vars phi in
+  let open Solver in
+  let solver = mk_simple_solver ctxt in
+  if not (is_0_invariant phi) then
+    "Base case violated"
+  else if check solver [pred0; phi0] |> is_sat then
+    "Invariant includes bad states"
+  else if
+    check solver [phi0; invar0; trans01; invar1; Boolean.mk_not ctxt phi1]
+    |> is_sat
+  then
+    "Invariant is not invariant"
+  else
+    "Invariant is inductive"
+
+let k_induction_wo_unrolling bound =
+  (* 0 invariant *)
+  let phi = Boolean.mk_not ctxt pred in
+  let rec loop k =
+    if k > bound then
+      "Bound exceeded"
+    else match k_ind ~enlarge_cex:System.enlarge_cex k phi phi with
+    | `Counterexample k -> sprintf "Reaching run of length: %d" k;
+    | `Blocked g ->
+      Caml.Format.printf "Result of invariant check: %s@." (check_invariant g);
+      sprintf "Invariant of diameter: %d" k
+    | `KCTI _ ->
+      loop (k + 1)
+  in
+  if not (is_0_invariant phi) then
+    "Initial states satisfy predicate"
+  else
+    loop 0
 
 end
