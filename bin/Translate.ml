@@ -651,6 +651,41 @@ let static_ceiling_single_cond k clock_var_name =
     ]
   ])
 
+let mk_fract ctxt e =
+  let open Arithmetic in
+  mk_sub ctxt [e; Integer.mk_int2real ctxt (Real.mk_real2int ctxt e)]
+
+let mk_floor ctxt e =
+  let open Arithmetic in
+  Integer.mk_int2real ctxt (Real.mk_real2int ctxt e)
+
+let lu_ceiling_cond l u clock_var_name =
+  let open Boolean in
+  let open Arithmetic in
+  let clock_var = var_of_name clock_var_name in
+  let next_var  = next_of_name clock_var_name in
+  let l = Real.mk_numeral_i ctxt l in
+  let u = Real.mk_numeral_i ctxt u in
+  mk_and ctxt [
+    mk_implies ctxt (mk_lt ctxt next_var clock_var) (mk_gt ctxt next_var l);
+    mk_implies ctxt (mk_gt ctxt next_var clock_var) (mk_gt ctxt clock_var u)
+  ]
+
+(* XXX wrong: need ordering constraints on fractions *)
+let lu_regions_cond l u clock_var_name =
+  let open Boolean in
+  let open Arithmetic in
+  let clock_var = var_of_name clock_var_name in
+  let next_var  = next_of_name clock_var_name in
+  let l = Real.mk_numeral_i ctxt l in
+  let u = Real.mk_numeral_i ctxt u in
+  mk_or ctxt [
+    mk_eq  ctxt clock_var next_var;
+    mk_eq  ctxt (mk_floor ctxt clock_var) (mk_floor ctxt next_var);
+    mk_and ctxt [mk_lt ctxt next_var clock_var; mk_gt ctxt next_var l];
+    mk_and ctxt [mk_gt ctxt next_var clock_var; mk_gt ctxt clock_var u]
+  ]
+
 module All_Environment = Environment (Context)
   (struct
     let variable_declarations =
@@ -680,12 +715,50 @@ let global_static_ceiling_cond k =
   :: List.map clk_vars ~f:(static_ceiling_single_cond k)
   |> Boolean.mk_and ctxt
 
-let delay_clock_vars =
-  let clk_vars = clk_vars_of model.variables in
-  let lhss = List.map ~f:var_of_name clk_vars in
-  let rhss = List.map ~f:(fun e -> Arithmetic.mk_add ctxt [e; delta_var]) lhss
+let collect_constraints ~f automaton =
+  let filter e = if f e then Some e else None in
+  List.filter_map automaton.edges ~f:(fun e -> filter e.guard.exp)
+  @ List.filter_map automaton.locations ~f:(fun l -> filter l.time_progress.exp)
+
+let lu_bounds clock_name =
+  let filter = function
+  | Binary {left = Var name; _} -> String.equal clock_name name
+  | _ -> false
   in
-  fun e -> Expr.substitute e lhss rhss
+  let constraints =
+    List.concat_map model.automata ~f:(collect_constraints ~f:filter) in
+  let l = List.filter_map constraints ~f:(function
+    | Binary {op; right = Const (Int x); _} when
+        List.mem ["="; "≤"; "<"] op ~equal:String.equal -> Some x
+    | _ -> None
+  ) |> List.max_elt ~compare:Int.compare |> Option.value ~default:(-1) in
+  let u = List.filter_map constraints ~f:(function
+    | Binary {op; right = Const (Int x); _} when
+        List.mem ["="; "≥"; ">"] op ~equal:String.equal -> Some x
+    | _ -> None
+  ) |> List.max_elt ~compare:Int.compare |> Option.value ~default:(-1) in
+  l, u
+
+let lu_cond_gen single_cond =
+  let clk_vars = clk_vars_of model_variables in
+  let all_discrete_unchanged = All_Environment.discrete_unchanged in
+  let all_pc_unchanged = List.map model.automata
+    ~f:(fun automaton ->
+      let module A = Automaton (struct let automaton = automaton end)
+      in A.pc_var_renamed_unchanged)
+    |> Boolean.mk_and ctxt in
+  all_pc_unchanged
+  :: all_discrete_unchanged
+  :: List.map clk_vars ~f:(fun clk_name ->
+    let l, u = lu_bounds clk_name in
+    printf "Bounds for %s: %d (l) and %d (u)\n@." clk_name l u;
+    single_cond l u clk_name
+  )
+  |> Boolean.mk_and ctxt
+
+let lu_simulation_cond = lu_cond_gen lu_ceiling_cond
+
+let lu_region_simulation_cond = lu_cond_gen lu_regions_cond
 
 let renamer_of automaton_name =
   let renaming, _var_sets =
@@ -749,8 +822,10 @@ let print_all () = Boolean.(
     [trans; mk_or ctxt [sync_composition; eps_composition]; clock_effect] in
   let prop = translate_property (List.hd_exn model.properties) in
   let glob_ceiling = global_static_ceiling_cond 0 in
-  let ceiling_opt = Some glob_ceiling in
-  let _ceiling_opt = None in
+  let _ceiling_opt = Some glob_ceiling in
+  let ceiling_opt = None in
+  let _ceiling_opt = Some lu_region_simulation_cond in
+  let _ceiling_opt = Some lu_simulation_cond in
   (* need special treatment for delays in prop check *)
   dprintf "Clock effect:@ %a" pp_expr clock_effect
   |> print_boxed;
