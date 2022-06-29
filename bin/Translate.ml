@@ -766,6 +766,46 @@ let renamer_of automaton_name =
   let lhss, rhss = List.unzip renaming in
   fun e -> Expr.substitute e lhss rhss
 
+(* XXX missing fraction ordering constraints *)
+let region_from_cex var_assignment =
+  let open Boolean in
+  let open Arithmetic in
+  let var_of_name = All_Environment.var_of_name in
+  let clk_vars = clk_vars_of model_variables in
+  let get name =
+    List.Assoc.find ~equal:Expr.equal var_assignment (var_of_name name)
+    |> Option.value_exn |> Option.value_exn in
+  let get_val name = get name |> Real.get_ratio in
+  let discrete_var_names = All_Environment.discrete_var_names in
+  let pc_var_names = List.map model.automata
+    ~f:(fun automaton -> rename automaton.name pc_var_name) in
+  let fixed_discrete = List.map (discrete_var_names @ pc_var_names)
+    ~f:(fun var_name -> mk_eq ctxt (var_of_name var_name) (get var_name)) in
+  let fix_individual name =
+    let var = var_of_name name in
+    let v = get_val name in
+    let l, u = lu_bounds name in
+    if Z.equal (Q.den v) (Z.of_int 1) then
+      mk_eq ctxt var (get name)
+    else if Q.gt v (Q.of_int u) then
+      mk_gt ctxt var (Real.mk_numeral_i ctxt u)
+    else if Q.lt v (Q.of_int l) then
+      mk_lt ctxt var (Real.mk_numeral_i ctxt l)
+    else
+      mk_and ctxt [
+        mk_gt ctxt var (Real.mk_numeral_i ctxt (Q.to_int v));
+        mk_lt ctxt var (Real.mk_numeral_i ctxt (Q.to_int v + 1));
+      ] in
+  let fixed_clocks = List.map clk_vars ~f:fix_individual in
+  mk_and ctxt (fixed_discrete @ fixed_clocks)
+
+let delay_clock_vars =
+  let clk_vars = clk_vars_of model_variables in
+  let lhss = List.map ~f:var_of_name clk_vars in
+  let rhss = List.map ~f:(fun e -> Arithmetic.mk_add ctxt [e; delta_var]) lhss
+  in
+  fun e -> Expr.substitute e lhss rhss
+
 let translate_property_expression ({
   op;
   exp;
@@ -846,6 +886,7 @@ let print_all () = Boolean.(
     let invar = pre_vars, invar
     let trans = pre_vars, aux_vars, post_vars, trans
     let direct_simulation_opt = ceiling_opt
+    let enlarge_cex = region_from_cex
   end in
   (module System: BMC.System)
 )
@@ -870,6 +911,9 @@ let print_all ?(property_name=None) ~bound model =
   in let module Checker = BMC.BMC (System) (Context) in
   (* let result = Checker.bmc bound in
   let _: unit = printf "Result of BMC for k = %d: %s@." bound result in *)
-  let result = Checker.k_induction bound in
-  let _: unit = printf "Result of k-induction for k = %d: %s@." bound result in
+  (* let result1 = Checker.k_induction bound in
+  let _: unit = printf "Result of k-induction for k = %d: %s@." bound result1 in *)
+  let result = Checker.k_induction_wo_unrolling bound in
+  let _: unit = printf "Result of k-induction without unrolling for k = %d: %s@." bound result in
+  (* let _: unit = printf "Result of k-induction for k = %d: %s@." bound result1 in *)
   ()
