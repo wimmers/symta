@@ -43,12 +43,42 @@ and mk_bool b = if b then Boolean.mk_true ctxt else Boolean.mk_false ctxt
 end
 
 
+type typ =
+  Bounded of bounded_type
+| Bool
+| Clock
+| String
+
+type variable_declaration = {
+  name : identifier;
+  typ : typ;
+  initial_value : expression option
+}
+
 let discrete_var_names_of =  List.filter_map ~f:(
   fun ({name; typ; _}: variable_declaration) ->
   match typ with
-  | TClock -> None
+  | Clock -> None
   | _ -> Some name
 )
+
+let cast_typ = function
+| TBounded x -> Bounded x
+| TClock -> Clock
+| TBool -> Bool
+
+let cast_var_decl ({
+  name;
+  typ;
+  initial_value;
+  _
+}: Symta.JANI.variable_declaration) =
+{
+  name;
+  typ = cast_typ typ;
+  initial_value;
+}
+
 
 module Environment (Context: Context) (Vars: (
   sig val variable_declarations: variable_declaration list end
@@ -57,9 +87,10 @@ module Environment (Context: Context) (Vars: (
 open ContextUtils (Context)
 
 let sort_of_typ = function
-| TBounded _ -> int_sort
-| TClock -> real_sort
-| TBool -> bool_sort
+| Bounded _ -> int_sort
+| Clock -> real_sort
+| Bool -> bool_sort
+| String -> string_sort
 
 let var_of_variable ({
   name;
@@ -174,7 +205,7 @@ let delta_var = mk_const_s ctxt delta_var_name real_sort
 let init_of_var_decl {name; initial_value; typ; _} =
   let initial_value =
     match typ with
-    | TClock -> delta_var
+    | Clock -> delta_var
     | _ -> Option.value initial_value ~default:(Const (Int 0)) |> expression
   in
   Boolean.mk_eq ctxt (var_of_name name) initial_value
@@ -258,8 +289,9 @@ let sync_val_of_action automaton_name action = (match action with
     mk_strong s
 )
 
+let model_variables = List.map model.variables ~f:cast_var_decl
 
-let var_set_global = discrete_var_names_of model.variables
+let var_set_global = discrete_var_names_of model_variables
 
 let _ = if not (List.is_empty var_set_global) then raise (
   Invalid_Model "Global variables are not supported"
@@ -272,7 +304,9 @@ module Automaton (Automaton:(
 
 open Automaton
 
-let variable_declarations = model.variables @ automaton.variables
+let automaton_variables = List.map automaton.variables ~f:cast_var_decl
+
+let variable_declarations = model_variables @ automaton_variables
 
 open Environment (Context: Context)
   (struct let variable_declarations = variable_declarations end)
@@ -325,7 +359,7 @@ let is_reset ({
   _
 }: assignment) = (
   match typ_of_name ref with
-    | TClock ->
+    | Clock ->
       if Poly.(value = Const (Int 0)) then
         true
       else
@@ -373,18 +407,16 @@ let edge var_set automaton_name edge_id pc pc' select sync ({
   and reset_pairs = List.map reset_vars ~f:(fun x -> (x, select_cond))
   in enable, effect, reset_pairs
 
+let automaton_name = automaton.name
+
 (**
 TODO:
 - weak synchronization ((\/ enabled i) --> (\/ select = i))
 *)
-let trans_automaton ({
-  name = automaton_name;
-  variables;
-  edges;
-  _
-} as _trans) = Boolean.(
+let trans_automaton () = Boolean.(
+  let edges = automaton.edges in
   let select_is i = mk_eq ctxt select_var (mk_int i)
-  and var_set_local = discrete_var_names_of variables
+  and var_set_local = discrete_var_names_of automaton_variables
   in let var_set = var_set_global @ var_set_local
   and eps_edges, strong_syncs, weak_syncs = Util.partition3_mapi edges ~f:(
     fun i edge ->
@@ -440,26 +472,22 @@ let trans_automaton ({
     sync_valid
   ], merged_reset_pairs)
 
-let init_automaton ({
-  variables;
-  initial_locations;
-  _
-}: automaton) =
+let init_automaton () =
   let pc_init =
-    List.map initial_locations
+    List.map automaton.initial_locations
       ~f:(fun s -> Boolean.mk_eq ctxt pc_var (mk_string s))
     |> Boolean.mk_or ctxt in
-  pc_init :: List.map ~f:init_of_var_decl variables
+  pc_init :: List.map ~f:init_of_var_decl variable_declarations
   |> Boolean.mk_and ctxt
 
 let local_var_decls_renamed =
-  List.map automaton.variables
-    ~f:(fun decl -> {decl with name = rename automaton.name decl.name})
+  List.map automaton.variables ~f:(fun decl ->
+    {(cast_var_decl decl) with name = rename automaton.name decl.name})
 
 let pc_var_renamed_unchanged = Boolean.mk_eq ctxt
   (renamed_pc_var automaton.name) (renamed_pc'_var automaton.name) 
 
-let var_set_local = discrete_var_names_of automaton.variables
+let var_set_local = discrete_var_names_of automaton_variables
 
 let var_renaming_of_automaton ({name; _}: automaton) =
   let local_renaming_pre = List.map var_set_local ~f:(
@@ -504,7 +532,12 @@ let var_of_names =
   List.map model.automata ~f:(fun automaton ->
     let module E = Environment
       (Context: Context)
-      (struct let variable_declarations = automaton.variables end)
+      (
+        struct
+          let variable_declarations =
+            List.map ~f:cast_var_decl automaton.variables
+        end
+      )
     in
     automaton.name, E.var_of_name
   )
@@ -512,7 +545,7 @@ let var_of_names =
 let clk_vars_of = List.filter_map ~f:(
   fun ({name; typ; _}: variable_declaration) ->
   match typ with
-  | TClock -> Some name
+  | Clock -> Some name
   | _ -> None
 )
 
@@ -520,10 +553,10 @@ let true_expr = Boolean.mk_true ctxt
 let false_expr = Boolean.mk_false ctxt
 
 open Environment (Context)
-  (struct let variable_declarations = model.variables end)
+  (struct let variable_declarations = model_variables end)
 
 let clock_effect reset_pairs =
-  let clk_vars = clk_vars_of model.variables in
+  let clk_vars = clk_vars_of model_variables in
   let reset_pairs = merge_reset_pairs reset_pairs in
   let reset_conds = List.map clk_vars ~f:Boolean.(fun x ->
     let x_var = var_of_name x in
@@ -580,13 +613,13 @@ let delta_constraint =
 
 let clocks_nonneg =
   let open Arithmetic in
-  let clk_vars = clk_vars_of model.variables in
+  let clk_vars = clk_vars_of model_variables in
   List.map clk_vars
     ~f:(fun name -> mk_ge ctxt (var_of_name name) (Real.mk_numeral_i ctxt 0))
   |> Boolean.mk_and ctxt
 
 let global_init =
-  List.map ~f:init_of_var_decl model.variables |> Boolean.mk_and ctxt
+  List.map ~f:init_of_var_decl model_variables |> Boolean.mk_and ctxt
 
 let pre_vars, aux_vars, post_vars =
   List.map renamings
@@ -623,14 +656,19 @@ module All_Environment = Environment (Context)
     let variable_declarations =
       let decls = List.map model.automata
         ~f:(fun automaton ->
-          let module A = Automaton (struct let automaton = automaton end)
-          in A.local_var_decls_renamed)
+          let module A = Automaton (struct let automaton = automaton end) in
+          let pc_var_decl = {
+            typ = String;
+            name = rename automaton.name pc_var_name;
+            initial_value = None;
+          } in
+          pc_var_decl :: A.local_var_decls_renamed)
       in
-      List.concat (model.variables :: decls)
+      List.concat (model_variables :: decls)
   end)
 
 let global_static_ceiling_cond k =
-  let clk_vars = clk_vars_of model.variables in
+  let clk_vars = clk_vars_of model_variables in
   let all_discrete_unchanged = All_Environment.discrete_unchanged in
   let all_pc_unchanged = List.map model.automata
   ~f:(fun automaton ->
@@ -681,13 +719,13 @@ let print_all () = Boolean.(
       let open Automaton (struct let automaton = automaton end) in
       dprintf "Automaton:@ %s" automaton.name |> print_boxed;
       let rename = renamer_of automaton.name in
-      let init = init_automaton automaton in
+      let init = init_automaton () in
       let init = rename init in
       dprintf "Init: %a" pp_expr init |> print_boxed;
       let invar = invar_automaton pc_var automaton |> snd |> rename in
       let invar = mk_and ctxt [invar; invar_loc_in_bounds |> rename] in
       dprintf "Invar: %a" pp_expr invar |> print_boxed;
-      let trans, reset_pairs = trans_automaton automaton in
+      let trans, reset_pairs = trans_automaton () in
       let trans, reset_pairs =
         rename trans,
         List.map ~f:(fun (x, y) -> x, rename y) reset_pairs in
