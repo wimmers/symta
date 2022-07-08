@@ -872,11 +872,16 @@ let print_all () = Boolean.(
     ) |> Util.unzip4 in
   let init, invar, trans =
     Util.apply3 ~f:(mk_and ctxt) (inits, invars, transs) in
-  let invar = Boolean.mk_and ctxt [invar; delta_constraint; clocks_nonneg] in
+  let invar = Boolean.mk_and ctxt [invar; clocks_nonneg] in
   let clock_effect = clock_effect reset_pairs in
-  let init = mk_and ctxt [init; global_init] in
+  let init = mk_and ctxt [init; global_init; delta_constraint] in
   let trans = mk_and ctxt
-    [trans; mk_or ctxt [sync_composition; eps_composition]; clock_effect] in
+    [
+      trans;
+      mk_or ctxt [sync_composition; eps_composition];
+      clock_effect;
+      delta_constraint
+    ] in
   let prop = translate_property (List.hd_exn model.properties) in
   let glob_ceiling = global_static_ceiling_cond 0 in
   let _ceiling_opt = Some glob_ceiling in
