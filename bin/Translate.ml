@@ -715,10 +715,24 @@ let global_static_ceiling_cond k =
   :: List.map clk_vars ~f:(static_ceiling_single_cond k)
   |> Boolean.mk_and ctxt
 
+let collect_subexpressions ~f e =
+  let v = object
+    inherit [ _ ] reduce_expression as super
+    method! visit_expression env e =
+      let env = (if f e then e :: env else env) in
+      super#visit_expression env e
+    method zero = []
+    method plus = List.append
+    method visit_identifier env _ = env
+    method visit_constant_value env _ = env
+  end in
+  v#visit_expression [] e
+
 let collect_constraints ~f automaton =
-  let filter e = if f e then Some e else None in
-  List.filter_map automaton.edges ~f:(fun e -> filter e.guard.exp)
-  @ List.filter_map automaton.locations ~f:(fun l -> filter l.time_progress.exp)
+  let collect = collect_subexpressions ~f in
+  List.concat_map automaton.edges ~f:(fun e -> collect e.guard.exp)
+  @ List.concat_map automaton.locations
+      ~f:(fun l -> collect l.time_progress.exp)
 
 let lu_bounds clock_name =
   let filter = function
@@ -727,12 +741,12 @@ let lu_bounds clock_name =
   in
   let constraints =
     List.concat_map model.automata ~f:(collect_constraints ~f:filter) in
-  let l = List.filter_map constraints ~f:(function
+  let u = List.filter_map constraints ~f:(function
     | Binary {op; right = Const (Int x); _} when
         List.mem ["="; "≤"; "<"] op ~equal:String.equal -> Some x
     | _ -> None
   ) |> List.max_elt ~compare:Int.compare |> Option.value ~default:(-1) in
-  let u = List.filter_map constraints ~f:(function
+  let l = List.filter_map constraints ~f:(function
     | Binary {op; right = Const (Int x); _} when
         List.mem ["="; "≥"; ">"] op ~equal:String.equal -> Some x
     | _ -> None
