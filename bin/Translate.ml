@@ -2,8 +2,9 @@ open Base
 open Printf
 open Z3
 open Expr
+open Symta
 open Z3_More
-open Symta.JANI
+open JANI
 
 let printf = Caml.Format.printf
 

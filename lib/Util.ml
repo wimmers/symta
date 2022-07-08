@@ -61,6 +61,20 @@ let (--) i j =
 
 let repeat ~num ~v = List.map ~f:(fun _ -> v) (0 -- num)
 
+let comb n xs =
+  let rec loop k xs =
+    if k >= List.length xs then
+      [xs]
+    else match xs with
+    | [] -> assert false
+    | x :: xs ->
+      List.map ~f:(fun ys -> x :: ys) (loop (k - 1) xs)
+      @ loop (k - 1) xs
+  in
+  if List.length xs < n then
+    []
+  else loop n xs
+
 (* Optionals *)
 
 let pair_with_option l = function Some r -> Some (l, r) | None -> None
@@ -76,3 +90,5 @@ let apply_option ~f value_opt x =
 let apply2 ~f (x, y) = f x, f y
 
 let apply3 ~f (x, y, z) = f x, f y, f z
+
+let apply4 ~f (w, x, y, z) = f w, f x, f y, f z

@@ -2,6 +2,6 @@
  (public_names symta muntax_to_jani)
  (names main muntax_to_jani)
  (libraries
-   symta core core_unix.command_unix core_unix.filename_unix re2 yojson Z3)
+   symta core core_unix.command_unix core_unix.filename_unix re2 yojson z3)
  (preprocess (pps ppx_jane ppx_yojson_conv))
  )
