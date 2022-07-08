@@ -46,7 +46,7 @@ module BMC (System: System) (Context: Context) = struct
     substitute expr vars reindexed
 
   let next_vars = aux_vars @ post_vars
-  let invar_vars = aux_vars @ pre_vars
+  let init_vars = aux_vars @ pre_vars
 
   let bmc bound = Solver.(
     let solver = mk_simple_solver ctxt in
@@ -54,7 +54,7 @@ module BMC (System: System) (Context: Context) = struct
       if i > bound then
         "Bound exceeded"
       else
-        let invar = reindex i invar_vars invar in
+        let invar = reindex i pre_vars invar in
         let pred = reindex i pre_vars pred in
         let trans = reindex i next_vars trans |> reindex (i - 1) pre_vars in
         add solver [trans; invar];
@@ -64,8 +64,8 @@ module BMC (System: System) (Context: Context) = struct
         | SATISFIABLE -> sprintf "Reaching run of length: %d" i
         | _  -> loop (i + 1)
     in
-    let init = reindex 0 invar_vars init in
-    let invar = reindex 0 invar_vars invar in
+    let init = reindex 0 init_vars init in
+    let invar = reindex 0 pre_vars invar in
     let pred = reindex 0 pre_vars pred in
     add solver [init; invar];
     (* Caml.Format.printf "Pred: %a@." pp_expr pred;
@@ -132,12 +132,12 @@ module BMC (System: System) (Context: Context) = struct
       | Some model ->
         project_model model i |> print_projected
     in
-    let init = reindex 0 invar_vars init in
+    let init = reindex 0 init_vars init in
     let rec loop i neg_preds =
       if i > bound then
         "Bound exceeded"
       else
-        let invar = reindex i invar_vars invar in
+        let invar = reindex i pre_vars invar in
         let pred = reindex i pre_vars pred in
         let trans = reindex i next_vars trans |> reindex (i - 1) pre_vars in
         add solver [trans; invar];
@@ -159,7 +159,7 @@ module BMC (System: System) (Context: Context) = struct
             print_model i;
             loop (i + 1) (Boolean.mk_not ctxt pred :: neg_preds)
     in
-    let invar = reindex 0 invar_vars invar in
+    let invar = reindex 0 pre_vars invar in
     let pred = reindex 0 pre_vars pred in
     printf "@[Simulation:@ %a@]@." (pp_opt pp_expr) direct_simulation_opt;
     add solver [invar];
@@ -169,8 +169,9 @@ module BMC (System: System) (Context: Context) = struct
 
 let dest_conj e =
   if not (Boolean.is_and e) then
-    raise (Invalid_argument
-      (Caml.Format.asprintf "Not a conjunction: %a" pp_expr e))
+    (* raise (Invalid_argument
+      (Caml.Format.asprintf "Not a conjunction: %a" pp_expr e)) *)
+    [e]
   else
     get_args e
 
@@ -190,11 +191,11 @@ let k_ind ~enlarge_cex k frame0 phi =
     let extracted_pre_vars = project_index_vars model 0 pre_vars in
     enlarge_cex extracted_pre_vars
   in
-  let init = reindex 0 invar_vars init in
-  let invar = reindex 0 invar_vars invar in
-  let trans = reindex 1 next_vars trans |> reindex 0 pre_vars in
+  let init0 = reindex 0 init_vars init in
+  let invar0 = reindex 0 pre_vars invar in
+  let trans01 = reindex 1 next_vars trans |> reindex 0 pre_vars in
   (* consumes a vanilla conjunction, returns a non-indexed cube *)
-  let generalize frame s =
+  let generalize frame0 s =
     let open Boolean in
     let cube = simplify s None |> dest_conj |> List.map ~f:(mk_not ctxt) in
     (* let cube = simplify s None |> dest_conj in *)
@@ -203,8 +204,8 @@ let k_ind ~enlarge_cex k frame0 phi =
       let c1 = reindex 1 pre_vars c in
       (* printf "Try gen: %a@." pp_expr (mk_not ctxt c0 |> fun s -> simplify s None);
       printf "Init: %a@." pp_expr init; *)
-      not (is_sat (check solver [frame; trans; c0; mk_not ctxt c1])
-        || is_sat (check solver [init; mk_not ctxt c0]))
+      not (is_sat (check solver [frame0; trans01; c0; mk_not ctxt c1])
+        || is_sat (check solver [init0; mk_not ctxt c0]))
       (* is_sat (check solver [init; mk_not ctxt c0]) *)
     in
     let rec loop acc = function
@@ -219,55 +220,59 @@ let k_ind ~enlarge_cex k frame0 phi =
     in
     loop [] cube
   in
-  let rec loop frame g q =
+  let rec loop frame0 g q =
     match q with
     | [] ->
-      printf "@[Blocked. g:@ %a@ frame:@ %a@]@." pp_expr g pp_expr frame;
+      printf "@[Blocked. g:@ %a@ frame:@ %a@]@." pp_expr g pp_expr frame0;
       `Blocked g
     | (s, f) :: q ->
-      printf "@[\n\nf:%d@ s: %a@]@." f pp_expr s;
+      printf "@[\n\nf:@ %d@ s: %a@]@." f pp_expr s;
       if f = 0 then
-        begin match check solver [init; invar; reindex 0 pre_vars s] with
+        begin match check solver [init0; invar0; reindex 0 pre_vars s] with
         | SATISFIABLE   -> `Counterexample k
         | UNSATISFIABLE -> `KCTI k
         | _ -> raise (Invalid_argument "Unexpected solver status")
         end
       else
-        let frame = mk_and ctxt [frame; mk_not ctxt (reindex 0 pre_vars s)] in
-        let s' = reindex 1 pre_vars s in
-        begin match check solver [frame; trans; s'] with
+        let s0 = reindex 0 pre_vars s in
+        let s1 = reindex 1 pre_vars s in
+        let frame0 = mk_and ctxt [frame0; mk_not ctxt s0] in
+        begin match check solver [frame0; trans01; s1] with
         | SATISFIABLE ->
           let model = get_model solver in
           let t = extract_predecessor model s in
+          printf "@[Extracted cex:@ %a@ Frame was:@ %a@]@."
+            pp_expr t pp_expr frame0;
           let () = assert (
-            check solver [mk_not ctxt frame; reindex 0 pre_vars t]
+            check solver [mk_not ctxt frame0; reindex 0 pre_vars t]
             |> is_sat |> not) in
-          printf "@[Extracted cex: %a@]@." pp_expr t;
-          loop frame g ((t, f - 1) :: (s, f) :: q)
+          loop frame0 g ((t, f - 1) :: (s, f) :: q)
         | UNSATISFIABLE ->
-          let c = generalize frame s in
-          let frame = mk_and ctxt [frame; reindex 0 pre_vars c] in
+          let c = generalize frame0 s in
+          let c0 = reindex 0 pre_vars c in
+          let frame0 = mk_and ctxt [frame0; c0] in
           let g = mk_and ctxt [g; c] in
           printf "@[Cube blocked:@ %a@ Generalize:@ %a@]@." pp_expr s pp_expr c;
-          loop frame g q
+          loop frame0 g q
         | _ -> raise (Invalid_argument "Unexpected solver status")
         end
   in
   printf "\n\nk-ind for k=%d@." k;
-  loop (mk_and ctxt [frame0; invar]) phi [mk_not ctxt phi, k]
+  loop (mk_and ctxt [frame0; invar0]) phi [mk_not ctxt phi, k]
+  (* loop frame0 phi [mk_not ctxt phi, k] *)
 
 let is_0_invariant phi =
   let pred0 = Boolean.mk_not ctxt phi |> reindex 0 pre_vars in
-  let invar0 = reindex 0 invar_vars invar in
-  let init0 = reindex 0 invar_vars init in
+  let invar0 = reindex 0 pre_vars invar in
+  let init0 = reindex 0 init_vars init in
   let open Solver in
   let solver = mk_simple_solver ctxt in
   check solver [init0; invar0; pred0] |> is_sat |> not
 
 let check_invariant phi =
   let pred0 = reindex 0 pre_vars pred in
-  let invar0 = reindex 0 invar_vars invar in
-  let invar1 = reindex 1 invar_vars invar in
+  let invar0 = reindex 0 pre_vars invar in
+  let invar1 = reindex 1 pre_vars invar in
   let trans01 = reindex 1 next_vars trans |> reindex 0 pre_vars in
   let phi0 = reindex 0 pre_vars phi in
   let phi1 = reindex 1 pre_vars phi in
@@ -288,10 +293,12 @@ let check_invariant phi =
 let k_induction_wo_unrolling bound =
   (* 0 invariant *)
   let phi = Boolean.mk_not ctxt pred in
+  (* let phi0 = reindex 0 pre_vars phi in *)
+  let phi0 = Boolean.mk_true ctxt in
   let rec loop k =
     if k > bound then
       "Bound exceeded"
-    else match k_ind ~enlarge_cex:System.enlarge_cex k phi phi with
+    else match k_ind ~enlarge_cex:System.enlarge_cex k phi0 phi with
     | `Counterexample k -> sprintf "Reaching run of length: %d" k;
     | `Blocked g ->
       Caml.Format.printf "Result of invariant check: %s@." (check_invariant g);
