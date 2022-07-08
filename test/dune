@@ -1,0 +1,3 @@
+(test
+ (name symta_test)
+ (libraries symta z3))
