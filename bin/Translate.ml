@@ -801,10 +801,13 @@ let region_from_cex var_assignment =
     let l, u = lu_bounds name in
     if Z.equal (Q.den v) (Z.of_int 1) then
       mk_eq ctxt var (get name)
-    else if Q.gt v (Q.of_int u) then
-      mk_gt ctxt var (Real.mk_numeral_i ctxt u)
-    else if Q.lt v (Q.of_int l) then
-      mk_lt ctxt var (Real.mk_numeral_i ctxt l)
+    else if Q.gt v (Q.of_int (max u l)) then
+      mk_gt ctxt var (Real.mk_numeral_i ctxt (max u l))
+    (* else if Q.lt v (Q.of_int l) then
+      mk_and ctxt [
+        mk_lt ctxt var (Real.mk_numeral_i ctxt l);
+        mk_gt ctxt var (Real.mk_numeral_i ctxt 0)
+      ] *)
     else
       mk_and ctxt [
         mk_gt ctxt var (Real.mk_numeral_i ctxt (Q.to_int v));
