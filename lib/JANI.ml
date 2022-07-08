@@ -63,6 +63,7 @@ type constant_value =
 | Bool of bool
 [@@deriving yojson]
 
+[@@@warning "-17"]
 type expression =
 | Var of identifier
 | Const of constant_value
@@ -79,7 +80,9 @@ type expression =
     name : identifier;
     exp : expression;
   }
-[@@deriving yojson]
+[@@deriving yojson, visitors { variety = "reduce" }]
+
+class virtual [ 'self] reduce_expression = ['self] reduce
 
 let is_mem = Base.List.Assoc.mem ~equal:String.equal
 let get = Base.List.Assoc.find_exn ~equal:String.equal
