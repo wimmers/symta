@@ -6,6 +6,19 @@ open Symta
 open Z3_More
 open JANI
 
+(** Convert JANI timed automata models to SMT formulae.
+  
+  The backend used for the SMT formulae is Z3's OCaml interface.
+
+  The translation proceeds modularly per automaton.
+
+  A final step generates a single system fom the formulae representing
+  the individual automata and the synchronization constraints.
+
+  The translation fuses an action step followed by a delay step into a single
+  transition relation.
+*)
+
 let printf = Caml.Format.printf
 
 module type Model = sig
@@ -24,7 +37,7 @@ let invalid_expr_exn msg e =
 let invalid_exn msg s =
   Invalid_Model (sprintf "%s: %s" msg s)
 
-
+(** This module provides convencience functions for constructing formulae. *)
 module ContextUtils (Context: Context) = struct
 let ctxt = Context.context
 
@@ -43,7 +56,12 @@ and mk_bool b = if b then Boolean.mk_true ctxt else Boolean.mk_false ctxt
 
 end
 
+(*** We use an internal type universe for the translation,
+   since we want to use more than what is provided by JANI.
 
+   The module also provides a number of derivied functionalities, notably for
+   translating model expressions.
+*)
 type typ =
   Bounded of bounded_type
 | Bool
@@ -80,7 +98,10 @@ let cast_var_decl ({
   initial_value;
 }
 
-
+(** Environments are a central to the translation.
+  They keep track of the currently known model variables and allow to translate
+  these to Z3 constants.
+  *)
 module Environment (Context: Context) (Vars: (
   sig val variable_declarations: variable_declaration list end
 )) = struct
@@ -218,8 +239,10 @@ let discrete_unchanged =
 
 end
 
-(** Preconditions:
-- The automata names in `elements` are a subset of the ones in `automata`.
+(** This module contains the implementation of the main translation procedure.
+
+  Preconditions:
+  - The automata names in `elements` are a subset of the ones in `automata`.
 *)
 module Formula (Context: Context) (Model: Model) = struct
 
@@ -298,7 +321,7 @@ let _ = if not (List.is_empty var_set_global) then raise (
   Invalid_Model "Global variables are not supported"
 )
 
-
+(** Procedure for translating a single automaton. *)
 module Automaton (Automaton:(
   sig val automaton: automaton end
 )) = struct
@@ -322,9 +345,10 @@ let invar_location pc ({
     (expression time_progress.exp)
 )
 
-(**
-TODO:
-- Force automata within valid locations and variables within valid bounds
+(** Generating the invariant predicate of the automaton.
+
+  TODO:
+  - Force automata within valid locations and variables within valid bounds
 *)
 let invar_automaton pc ({
   name;
@@ -410,9 +434,10 @@ let edge var_set automaton_name edge_id pc pc' select sync ({
 
 let automaton_name = automaton.name
 
-(**
-TODO:
-- weak synchronization ((\/ enabled i) --> (\/ select = i))
+(** Generating the transition relation of the automaton.
+
+  TODO:
+  - weak synchronization ((\/ enabled i) --> (\/ select = i))
 *)
 let trans_automaton () = Boolean.(
   let edges = automaton.edges in
@@ -473,6 +498,7 @@ let trans_automaton () = Boolean.(
     sync_valid
   ], merged_reset_pairs)
 
+(** Generating the initial state predicate of the automaton. *)
 let init_automaton () =
   let pc_init =
     List.map automaton.initial_locations
@@ -490,6 +516,11 @@ let pc_var_renamed_unchanged = Boolean.mk_eq ctxt
 
 let var_set_local = discrete_var_names_of automaton_variables
 
+(** We prodcue a renaming for each automaton from its local variables to
+  globally unique names.
+
+  This renaming will be used when building the final system.
+*)
 let var_renaming_of_automaton ({name; _}: automaton) =
   let local_renaming_pre = List.map var_set_local ~f:(
     fun x ->
@@ -521,6 +552,7 @@ let var_renaming_of_automaton ({name; _}: automaton) =
 
 end
 
+(** Global translation step *)
 
 let renamings =
   List.map model.automata ~f:(fun automaton ->
@@ -556,6 +588,13 @@ let false_expr = Boolean.mk_false ctxt
 open Environment (Context)
   (struct let variable_declarations = model_variables end)
 
+(** The delay condition.
+
+  We fuse action and delay steps. Therefore, in each step,
+  the effect on a clock is to either:
+  - add the non-deterministically chosen value `delta` to the clock,
+  - or to reset the clock, and thus setting the clock's value to `delta`.
+  *)
 let clock_effect reset_pairs =
   let clk_vars = clk_vars_of model_variables in
   let reset_pairs = merge_reset_pairs reset_pairs in
@@ -572,6 +611,7 @@ let clock_effect reset_pairs =
   ) in
   Boolean.mk_and ctxt reset_conds
 
+(** Composition *)
 let global_sync_var_name = "Sync"
 let global_sync_var = mk_const_s ctxt global_sync_var_name int_sort
 
@@ -612,6 +652,7 @@ let all_composition =
 let delta_constraint =
   Arithmetic.(mk_ge ctxt delta_var (Real.mk_numeral_i ctxt 0))
 
+(** Clock invariant *)
 let clocks_nonneg =
   let open Arithmetic in
   let clk_vars = clk_vars_of model_variables in
@@ -619,8 +660,11 @@ let clocks_nonneg =
     ~f:(fun name -> mk_ge ctxt (var_of_name name) (Real.mk_numeral_i ctxt 0))
   |> Boolean.mk_and ctxt
 
+(** The initial condition of the overall system *)
 let global_init =
   List.map ~f:init_of_var_decl model_variables |> Boolean.mk_and ctxt
+
+(** Sepcifying the sets of variables, on which the global system is defined. *)
 
 let pre_vars, aux_vars, post_vars =
   List.map renamings
@@ -640,6 +684,8 @@ let pre_vars, aux_vars, post_vars =
   pre_vars @ glob_pre_vars,
   aux_vars @ glob_aux_vars,
   post_vars @ post_aux_vars
+
+(** Translating the model checking property. *)
 
 module All_Environment = Environment (Context)
   (struct
@@ -679,10 +725,17 @@ let translate_property_expression ({
 let translate_property property =
   translate_property_expression property.expression
 
+(** Printing utilities. *)
 let print_boxed = Caml.Format.printf "@[%t@]\n@."
 
 let dprintf = Caml.Format.dprintf
 
+(** Generating the overall system.
+
+  The result is returned as an instance of `BMC.System`.
+
+  For debugging purposes, the system description is also printed to stdout.
+*)
 let print_all () = Boolean.(
   let inits, invars, transs, reset_pairs =
     List.map model.automata ~f:(fun automaton ->
