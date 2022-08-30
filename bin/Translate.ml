@@ -800,23 +800,3 @@ let print_all () = Boolean.(
 )
 
 end
-
-let print_all ?(property_name=None) ~bound model =
-  let model = begin match property_name with
-  | None -> model
-  | Some name ->
-    let property = List.find_exn
-      ~f:(fun prop -> String.equal prop.name name) model.properties in
-    {model with properties = [property]}
-  end in
-  let _: unit = Stdio.print_endline "Creating context" in
-  let module Context = struct let context = mk_context [] end
-  in let _: unit = Stdio.print_endline "Setting up model"
-  in let module Model = struct let model = model end
-  in let _: unit = Stdio.print_endline "Creating translation environment"
-  in let module Formula = Formula (Context) (Model)
-  in let module System = (val (Formula.print_all ()))
-  in let module Checker = BMC.BMC (System) (Context) in
-  let result = Checker.bmc bound in
-  let _: unit = printf "Result of BMC for k = %d: %s@." bound result in
-  ()
