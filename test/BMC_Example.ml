@@ -31,14 +31,6 @@ let invar = Boolean.mk_true ctx
 let pre_vars = [x; a; b; c]
 let aux_vars = []
 let post_vars = [x'; a'; b'; c']
-let enlarge_cex var_assignment =
-  var_assignment
-  |> List.filter_map ~f:(function
-  | _, None -> None
-  | e, Some v -> Some (Boolean.mk_eq ctx e v)
-  )
-  |> Boolean.mk_and ctx
-
 
 let bad = Boolean.mk_not ctx x
 
@@ -47,11 +39,9 @@ module System: BMC.System = struct
   let pred = pre_vars, bad
   let invar = pre_vars, invar
   let trans = pre_vars, aux_vars, post_vars, trans
-  let direct_simulation_opt = None
-  let enlarge_cex = enlarge_cex
 
 end
 
 module BMC = BMC.BMC (System) (struct let context = ctx end)
 
-let main () = BMC.k_induction_wo_unrolling 2
+let main () = BMC.bmc 2
