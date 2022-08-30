@@ -1,5 +1,6 @@
 (library
  (name symta)
+ (public_name symta)
  (libraries yojson core z3)
  (preprocess (pps ppx_jane ppx_yojson_conv visitors.ppx))
  )
