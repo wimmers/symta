@@ -20,6 +20,6 @@
  (description
   "Tranlsation of timed automata models specified with JANI to SMT formulae,
   enabling basic bounded model checking")
- (depends ocaml dune core yojson re2 z3)
+ (depends ocaml dune core yojson re2 z3 ppx_yojson_conv core_unix visitors)
  (tags
   ("timed automata" "model checking" "verification")))

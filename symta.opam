@@ -18,6 +18,9 @@ depends: [
   "yojson"
   "re2"
   "z3"
+  "ppx_yojson_conv"
+  "core_unix"
+  "visitors"
   "odoc" {with-doc}
 ]
 build: [
